@@ -1,0 +1,30 @@
+#!/bin/bash
+
+# --- CONFIGURACIÓN ---
+# Define la ruta original de tus UKIs (habitualmente /boot/EFI/Linux o /efi/EFI/Linux)
+UKI_DIR="/boot/EFI/Linux"
+if [ ! -d "$UKI_DIR" ]; then
+    UKI_DIR="/efi/EFI/Linux"
+fi
+
+# Carpeta de respaldo dentro de /etc/timeshift
+BACKUP_DIR="/etc/timeshift/uki-backup"
+# ----------------------
+
+echo "=== [UKI Backup Hook] Iniciando respaldo ==="
+
+# Asegurar que el directorio de respaldo existe
+mkdir -p "$BACKUP_DIR"
+
+# Limpiar respaldos anteriores para no acumular archivos obsoletos
+rm -f "$BACKUP_DIR"/*.efi
+
+# Verificar si existen imágenes UKI en la ruta de origen y copiarlas
+if [ -d "$UKI_DIR" ] && ls "$UKI_DIR"/*.efi >/dev/null 2>&1; then
+    cp "$UKI_DIR"/*.efi "$BACKUP_DIR"/
+    echo "[UKI Backup Hook] Archivos copiados exitosamente a $BACKUP_DIR"
+else
+    echo "[UKI Backup Hook] ADVERTENCIA: No se encontraron archivos UKI (.efi) en $UKI_DIR"
+fi
+
+echo "=== [UKI Backup Hook] Finalizado ==="

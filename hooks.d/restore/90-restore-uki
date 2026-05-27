@@ -1,0 +1,82 @@
+#!/bin/bash
+
+# --- CONFIGURACIÓN ---
+# Carpeta de respaldo recuperada tras la restauración
+BACKUP_DIR="/etc/timeshift/uki-backup"
+# ----------------------
+
+echo "=== [UKI Restore Hook] Iniciando restauración ==="
+
+WAS_RO=false
+TARGET_MNT=""
+
+# 1. Asegurar el montaje de la partición de arranque y verificar si es Solo Lectura (RO)
+for mnt in /boot /efi; do
+    if [ -d "$mnt" ]; then
+        # Si no está montado, intentar montarlo primero
+        if ! mountpoint -q "$mnt"; then
+            echo "[UKI Restore Hook] Montando $mnt..."
+            mount "$mnt" 2>/dev/null
+        fi
+
+        # Si ya está montado, analizar su estado
+        if mountpoint -q "$mnt"; then
+            TARGET_MNT="$mnt"
+            # Comprobar si está montado en modo de solo lectura (ro)
+            if findmnt -O ro "$mnt" >/dev/null; then
+                echo "[UKI Restore Hook] $mnt está montado como SOLO LECTURA. Remontando temporalmente en modo Lectura-Escritura (RW)..."
+                mount -o remount,rw "$mnt"
+                WAS_RO=true
+            fi
+            break # Salir del bucle una vez localizada la partición activa
+        fi
+    fi
+done
+
+# 2. Ahora que la partición está montada, definimos de manera segura la ruta destino original de tus UKIs
+if [ -d "/boot/EFI/Linux" ]; then
+    UKI_DIR="/boot/EFI/Linux"
+elif [ -d "/efi/EFI/Linux" ]; then
+    UKI_DIR="/efi/EFI/Linux"
+else
+    # Fallback por si la carpeta EFI/Linux no existiera todavía (se creará más adelante)
+    if [ "$TARGET_MNT" = "/efi" ]; then
+        UKI_DIR="/efi/EFI/Linux"
+    else
+        UKI_DIR="/boot/EFI/Linux"
+    fi
+fi
+
+# 3. Verificar si existe el directorio de respaldo y si contiene archivos
+if [ ! -d "$BACKUP_DIR" ] || ! ls "$BACKUP_DIR"/*.efi >/dev/null 2>&1; then
+    echo "[UKI Restore Hook] ERROR: No se encontraron archivos de respaldo en $BACKUP_DIR"
+    # Si tuvimos que remontar a RW, lo regresamos a RO antes de salir en caso de error
+    if [ "$WAS_RO" = true ] && [ -n "$TARGET_MNT" ]; then
+        mount -o remount,ro "$TARGET_MNT"
+    fi
+    exit 1
+fi
+
+# Asegurar que el directorio de destino en la partición ESP existe
+mkdir -p "$UKI_DIR"
+
+# 4. Copiar las imágenes de vuelta a la partición ESP
+echo "[UKI Restore Hook] Copiando archivos de $BACKUP_DIR a $UKI_DIR..."
+cp "$BACKUP_DIR"/*.efi "$UKI_DIR"/
+COPY_STATUS=$?
+
+# 5. Devolver la partición a modo Solo Lectura si originalmente estaba así
+if [ "$WAS_RO" = true ] && [ -n "$TARGET_MNT" ]; then
+    echo "[UKI Restore Hook] Restaurando $TARGET_MNT a modo SOLO LECTURA..."
+    mount -o remount,ro "$TARGET_MNT"
+fi
+
+# 6. Reportar resultado final
+if [ $COPY_STATUS -eq 0 ]; then
+    echo "[UKI Restore Hook] ÉXITO: Imágenes UKI restauradas correctamente."
+else
+    echo "[UKI Restore Hook] ERROR: Falló la copia de archivos a la partición EFI."
+    exit 1
+fi
+
+echo "=== [UKI Restore Hook] Finalizado ==="
