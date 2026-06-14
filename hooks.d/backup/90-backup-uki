@@ -70,7 +70,7 @@ if [ -d "$UKI_DIR" ] && ls "$UKI_DIR"/*.efi >/dev/null 2>&1; then
             # Calcular checksum y guardarlo
             sha256sum "$uki" | awk '{print $1}' > "$BACKUP_DIR/$basename.sha256"
             log "INFO" "Respaldo exitoso: $basename (SHA256: $(cat "$BACKUP_DIR/$basename.sha256"))"
-            ((cp_count++))
+            cp_count=$((cp_count + 1))
         else
             log "ERROR" "Fallo en copia de: $basename"
             exit 1
