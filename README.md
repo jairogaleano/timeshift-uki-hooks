@@ -1,4 +1,4 @@
-# Timeshift UKI Hooks v2.1
+# Timeshift UKI Hooks v2.2
 
 Sistema de hooks para **Timeshift** que respalda y restaura imágenes **UKI (Unified Kernel Images)** en sistemas con **Btrfs + Secure Boot**.
 
@@ -9,7 +9,7 @@ Sistema de hooks para **Timeshift** que respalda y restaura imágenes **UKI (Uni
 - [Cómo funciona](#cómo-funciona)
 - [Requisitos](#requisitos)
 - [Instalación](#instalación)
-- [Novedades en v2.1](#novedades-en-v21)
+- [Novedades en v2.2](#novedades-en-v21)
 - [Seguridad](#seguridad)
 - [Depuración](#depuración)
 - [Licencia](#licencia)
@@ -59,12 +59,12 @@ El instalador se encarga de:
 
 ---
 
-## ✨ Novedades en v2.1
+## ✨ Novedades en v2.2
 
-- **Instalador Automático**: `install.sh` para facilitar el despliegue y actualización.
-- **Salto Inteligente (Backup & Restore)**: Los scripts comparan checksums SHA256 y omiten operaciones si el contenido es idéntico, reduciendo escrituras innecesarias.
-- **Nombres Normalizados**: Eliminación de puntos en nombres de archivos para asegurar compatibilidad total con `run-parts`.
-- **Versionado Interno**: Metadata actualizada dentro de los scripts para trazabilidad.
+- **Fix crítico**: Variable `expected_sha` inicializada correctamente para evitar `unbound variable` en restore hook.
+- **Seguridad**: Uso de `mktemp` en vez de `$$` para archivos temporales en restore hook.
+- **Skip condicional**: La comparación de checksums en restore salta archivos solo cuando SHA256 está disponible.
+- **Limpieza**: Eliminada variable `skipped_count` sin uso y redirección redundante en restore hook.
 
 ---
 

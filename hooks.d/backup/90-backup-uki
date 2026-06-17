@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Backup Script (v2.1)
+# Timeshift UKI Hooks - Backup Script (v2.2)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -44,8 +44,7 @@ log() {
 # Asegurar que el directorio de respaldo existe
 mkdir -p "$BACKUP_DIR"
 
-# NUEVA VERIFICACIÓN: Omitir si el archivo actual es idéntico al respaldo más reciente
-skipped_count=0
+# Omitir si el archivo actual es idéntico al respaldo más reciente
 copy_needed=false
 
 # Verificar si existen imágenes UKI en la ruta de origen

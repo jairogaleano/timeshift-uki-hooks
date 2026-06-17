@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Restore Script (v2.1)
+# Timeshift UKI Hooks - Restore Script (v2.2)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -85,7 +85,7 @@ else
 fi
 
 # 3. Verificar si existe el directorio de respaldo y contiene archivos
-if [ ! -d "$BACKUP_DIR" ] || ! ls "$BACKUP_DIR"/*.efi >/dev/null 2>&1 2>/dev/null; then
+if [ ! -d "$BACKUP_DIR" ] || ! ls "$BACKUP_DIR"/*.efi >/dev/null 2>&1; then
     log "ERROR" "No se encontraron archivos de respaldo en $BACKUP_DIR"
     if [ "$WAS_RO" = true ] && [ -n "$TARGET_MNT" ]; then
         mount -o remount,ro "$TARGET_MNT"
@@ -105,6 +105,7 @@ for uki_backup in "$BACKUP_DIR"/*.efi; do
     
     basename="${uki_backup##*/}"
     sha_file="${uki_backup%.efi}.sha256"
+    expected_sha=""
     
     # Verificar checksum si existe
     if [ -f "$sha_file" ]; then
@@ -123,17 +124,17 @@ for uki_backup in "$BACKUP_DIR"/*.efi; do
         log "WARN" "No se encontró archivo SHA256 para $basename, continuando sin verificación"
     fi
     
-    # NUEVA VERIFICACIÓN: Saltar si el archivo ya existe y es idéntico
+    # Saltar si el archivo ya existe y es idéntico
     if [ -f "$UKI_DIR/$basename" ]; then
         current_sha=$(sha256sum "$UKI_DIR/$basename" | awk '{print $1}')
-        if [ "$current_sha" == "$expected_sha" ]; then
+        if [ -n "$expected_sha" ] && [ "$current_sha" == "$expected_sha" ]; then
             log "INFO" "El archivo $basename ya existe y es idéntico en el destino. Saltando."
             continue
         fi
     fi
     
     # Copiar de forma atómica: escribir en temp, verificar, luego mover
-    temp_file="$UKI_DIR/.tmp_$$"
+    temp_file="$(mktemp "$UKI_DIR/.tmp_XXXXXXXX")"
     if cp --preserve=all "$uki_backup" "$temp_file"; then
         if mv "$temp_file" "$UKI_DIR/$basename"; then
             log "INFO" "Restaurado: $basename"

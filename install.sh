@@ -10,7 +10,7 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-echo "Instalando Timeshift UKI Hooks v2.1 (Nombres limpios)..."
+echo "Instalando Timeshift UKI Hooks v2.2..."
 
 # Crear directorios si no existen
 mkdir -p /etc/timeshift/backup-hooks.d
@@ -31,5 +31,5 @@ echo "Aplicando permisos de ejecución..."
 chmod +x /etc/timeshift/backup-hooks.d/90-backup-uki
 chmod +x /etc/timeshift/restore-hooks.d/90-restore-uki
 
-echo "Instalación/Actualización a v2.1 completada correctamente."
+echo "Instalación/Actualización a v2.2 completada correctamente."
 echo "Los hooks han sido instalados con nombres estándar para compatibilidad con run-parts."
