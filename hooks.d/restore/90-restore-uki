@@ -39,7 +39,7 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [UKI Restore Hook] [$level] $message" >> "$LOG_FILE" 2>/dev/null || true
 }
 
-echo "=== [UKI Restore Hook] Iniciando restauracion ===" >> "$LOG_FILE" 2>/dev/null || true
+log "INFO" "Iniciando restauracion de UKIs"
 
 WAS_RO=false
 TARGET_MNT=""
@@ -219,10 +219,8 @@ fi
 # 9. Reportar resultado final
 if [ "$restored_count" -gt 0 ]; then
     log "INFO" "EXITO: $restored_count UKIs restaurados correctamente"
-    echo "=== [UKI Restore Hook] EXITO: $restored_count UKIs restaurados ===" >> "$LOG_FILE" 2>/dev/null || true
 else
-    log "INFO" "No se restauraron archivos (puede ser que el respaldo ya no contenga UKIs .efi)"
-    echo "=== [UKI Restore Hook] Finalizado: Sin archivos restaurados ===" >> "$LOG_FILE" 2>/dev/null || true
+    log "INFO" "Finalizado: Sin archivos restaurados (el respaldo podria no contener UKIs .efi)"
 fi
 
 exit 0

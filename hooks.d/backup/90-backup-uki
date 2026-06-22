@@ -95,7 +95,6 @@ done
 
 if [ "$needs_backup" = false ]; then
     log "INFO" "Todos los UKIs estan actualizados en el respaldo. Saltando proceso de copia."
-    echo "=== [UKI Backup Hook] Finalizado: Sin cambios detectados, respaldo omitido ===" >> "$LOG_FILE" 2>/dev/null || true
     exit 0
 fi
 
@@ -136,11 +135,9 @@ for uki in "${uki_files[@]}"; do
 done
 
 if [ "$cp_count" -gt 0 ]; then
-    log "INFO" "Total de UKIs respaldados: $cp_count"
-    echo "=== [UKI Backup Hook] Finalizado: $cp_count UKIs respaldados ===" >> "$LOG_FILE" 2>/dev/null || true
+    log "INFO" "Finalizado: $cp_count UKIs respaldados"
 else
-    log "INFO" "No se respaldaron UKIs nuevos"
-    echo "=== [UKI Backup Hook] Finalizado: Sin cambios ===" >> "$LOG_FILE" 2>/dev/null || true
+    log "INFO" "Finalizado: Sin cambios"
 fi
 
 exit 0
