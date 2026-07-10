@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Instalador v2.6
+# Timeshift UKI Hooks - Instalador v2.7
 #
 
 set -e
@@ -13,23 +13,45 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 echo "Verificando dependencias del sistema..."
-DEPENDENCIES=("findmnt" "mountpoint" "sha256sum" "df")
+# findmnt y lsblk → util-linux, sha256sum y df → coreutils, mountpoint → util-linux
+declare -A DEP_PKG=(
+  ["findmnt"]="util-linux"
+  ["lsblk"]="util-linux"
+  ["mountpoint"]="util-linux"
+  ["sha256sum"]="coreutils"
+  ["df"]="coreutils"
+)
 MISSING_DEPS=()
+MISSING_PKGS=()
 
-for dep in "${DEPENDENCIES[@]}"; do
+for dep in "${!DEP_PKG[@]}"; do
   if ! command -v "$dep" >/dev/null 2>&1; then
     MISSING_DEPS+=("$dep")
+    pkg="${DEP_PKG[$dep]}"
+    # Evitar duplicados en la lista de paquetes
+    if [[ ! " ${MISSING_PKGS[*]:-} " =~ " ${pkg} " ]]; then
+      MISSING_PKGS+=("$pkg")
+    fi
   fi
 done
 
 if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
-  echo "Error: Faltan las siguientes dependencias necesarias: ${MISSING_DEPS[*]}"
-  echo "Por favor, instálalas antes de continuar."
-  exit 1
+  echo "Faltan las siguientes dependencias: ${MISSING_DEPS[*]}"
+  echo "Paquetes necesarios: ${MISSING_PKGS[*]}"
+  read -rp "¿Deseas instalarlos ahora con pacman? [S/n] " answer
+  answer="${answer:-S}"
+  if [[ "$answer" =~ ^[Ss]$ ]]; then
+    echo "Instalando paquetes..."
+    pacman -S --noconfirm "${MISSING_PKGS[@]}"
+    echo "Paquetes instalados correctamente."
+  else
+    echo "Instalación cancelada. Por favor, instala manualmente: ${MISSING_PKGS[*]}"
+    exit 1
+  fi
 fi
 echo "Todas las dependencias encontradas."
 
-echo "Instalando Timeshift UKI Hooks v2.6..."
+echo "Instalando Timeshift UKI Hooks v2.7..."
 
 # Crear directorios si no existen
 mkdir -p /etc/timeshift/backup-hooks.d
@@ -50,5 +72,5 @@ echo "Aplicando permisos de ejecución..."
 chmod +x /etc/timeshift/backup-hooks.d/90-backup-uki
 chmod +x /etc/timeshift/restore-hooks.d/90-restore-uki
 
-echo "Instalacion/Actualizacion a v2.6 completada correctamente."
+echo "Instalacion/Actualizacion a v2.7 completada correctamente."
 echo "Los hooks han sido instalados con nombres estándar para compatibilidad con run-parts."
