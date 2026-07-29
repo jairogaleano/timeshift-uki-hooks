@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Backup Script (v3.0)
+# Timeshift UKI Hooks - Backup Script (v3.1)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -52,8 +52,12 @@ detect_uki_dir() {
     local dirs=("/boot/EFI/Linux" "/efi/EFI/Linux" "/boot/efi/EFI/Linux")
     for d in "${dirs[@]}"; do
         if [ -d "$d" ]; then
-            echo "$d"
-            return 0
+            local parent_mnt
+            parent_mnt=$(findmnt -no TARGET --target "$d" 2>/dev/null | head -1)
+            if [ -n "$parent_mnt" ] && is_esp_partition "$parent_mnt"; then
+                echo "$d"
+                return 0
+            fi
         fi
     done
     local esp

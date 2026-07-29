@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Restore Script (v3.0)
+# Timeshift UKI Hooks - Restore Script (v3.1)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -87,7 +87,7 @@ fi
 resolve_esp_mount() {
     local dirs=("/boot" "/efi" "/boot/efi")
     for d in "${dirs[@]}"; do
-        if [ -d "$d" ] && [ ! -L "$d" ] && mountpoint -q "$d" 2>/dev/null; then
+        if [ -d "$d" ] && [ ! -L "$d" ] && mountpoint -q "$d" 2>/dev/null && is_esp_partition "$d"; then
             echo "$d"
             return 0
         fi

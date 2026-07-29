@@ -1,4 +1,4 @@
-# Timeshift UKI Hooks v3.0
+# Timeshift UKI Hooks v3.1
 
 Sistema de hooks para **Timeshift** que respalda y restaura imágenes **UKI (Unified Kernel Images)** en sistemas con **Btrfs + Secure Boot**. Compatible con múltiples distribuciones Linux.
 
@@ -246,7 +246,11 @@ Este proyecto se integra directamente con el sistema de registros de **Timeshift
 
 Para el historial completo de cambios, ver [CHANGELOG.md](CHANGELOG.md).
 
-### v3.0 (Última versión)
+### v3.1 (Última versión)
+- **Fix (restore hook)**: `resolve_esp_mount()` ahora verifica PARTTYPE GUID en la lista ordenada de directorios (`/boot`, `/efi`, `/boot/efi`), no solo en el fallback de `findmnt`. Evita restaurar UKIs en una partición vfat que no sea la ESP real.
+- **Backup Hook**: `detect_uki_dir()` también ahora valida PARTTYPE, asegurando que los UKIs se respalden desde la ESP genuina.
+
+### v3.0
 - **Soporte multi-distribución**: `install.sh` detecta automáticamente el gestor de paquetes (pacman, apt, dnf, zypper, xbps, apk).
 - **Fallback para chroot**: El restore hook detecta entornos chroot sin depender de `systemd-detect-virt`.
 - **Detección robusta de contenedores**: Namespaces PID, `/.dockerenv`, `/proc/1/cgroup`.
