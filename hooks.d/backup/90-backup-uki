@@ -36,8 +36,9 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [UKI Backup Hook] [$level] $message" >> "$LOG_FILE" 2>/dev/null || true
 }
 
-# Verificar si un punto de montaje corresponde a la particion EFI real (no USBs)
-is_esp_partition() {
+# Verificar si un punto de montaje corresponde a una particion de arranque valida
+# (ESP o XBOOTLDR) para evitar confusion con USBs
+is_valid_boot_partition() {
     local mount_point="$1"
     local dev
     dev=$(findmnt -no SOURCE "$mount_point" 2>/dev/null | head -1)
@@ -45,24 +46,21 @@ is_esp_partition() {
 
     local parttype
     parttype=$(lsblk -no PARTTYPE "$dev" 2>/dev/null | head -1)
-    [ "$parttype" = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ]
+    [ "$parttype" = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ] || \
+    [ "$parttype" = "bc13c2ff-59e6-4262-a352-b275fd6f7172" ]
 }
 
 detect_uki_dir() {
     local dirs=("/boot/EFI/Linux" "/efi/EFI/Linux" "/boot/efi/EFI/Linux")
     for d in "${dirs[@]}"; do
         if [ -d "$d" ]; then
-            local parent_mnt
-            parent_mnt=$(findmnt -no TARGET --target "$d" 2>/dev/null | head -1)
-            if [ -n "$parent_mnt" ] && is_esp_partition "$parent_mnt"; then
-                echo "$d"
-                return 0
-            fi
+            echo "$d"
+            return 0
         fi
     done
     local esp
     esp=$(findmnt -no TARGET -t vfat 2>/dev/null | while read -r mnt; do
-        if [ -d "$mnt/EFI/Linux" ] && is_esp_partition "$mnt"; then
+        if [ -d "$mnt/EFI/Linux" ] && is_valid_boot_partition "$mnt"; then
             echo "$mnt"
             break
         fi

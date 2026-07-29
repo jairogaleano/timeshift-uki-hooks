@@ -7,8 +7,7 @@ Todas las versiones significativas de este proyecto. Formato basado en [Keep a C
 ## [3.1] - 2026-07-28
 
 ### Fixed
-- `resolve_esp_mount()` en restore hook ahora verifica PARTTYPE GUID en la lista ordenada de directorios (`/boot`, `/efi`, `/boot/efi`), no solo en el fallback de `findmnt`. Evita restaurar UKIs en una partición vfat que no sea la ESP real.
-- `detect_uki_dir()` en backup hook ahora valida PARTTYPE del punto de montaje antes de aceptar un directorio como ubicación de UKIs.
+- `is_esp_partition()` renombrada a `is_valid_boot_partition()` y ahora acepta tanto ESP (`c12a7328-...`) como XBOOTLDR (`bc13c2ff-...`). Sistemas con partición XBOOTLDR independiente (ej. dual-boot Windows + Arch) ya no son rechazados por el filtro PARTTYPE.
 
 ### Changed
 - Versión bump a v3.1 en scripts, PKGBUILD y documentación.

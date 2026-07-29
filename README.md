@@ -247,8 +247,7 @@ Este proyecto se integra directamente con el sistema de registros de **Timeshift
 Para el historial completo de cambios, ver [CHANGELOG.md](CHANGELOG.md).
 
 ### v3.1 (Última versión)
-- **Fix (restore hook)**: `resolve_esp_mount()` ahora verifica PARTTYPE GUID en la lista ordenada de directorios (`/boot`, `/efi`, `/boot/efi`), no solo en el fallback de `findmnt`. Evita restaurar UKIs en una partición vfat que no sea la ESP real.
-- **Backup Hook**: `detect_uki_dir()` también ahora valida PARTTYPE, asegurando que los UKIs se respalden desde la ESP genuina.
+- **Fix**: `is_esp_partition()` renombrada a `is_valid_boot_partition()`. Ahora acepta tanto ESP (`c12a7328-...`) como XBOOTLDR (`bc13c2ff-...`). Sistemas con partición XBOOTLDR independiente (dual-boot) ya no son rechazados.
 
 ### v3.0
 - **Soporte multi-distribución**: `install.sh` detecta automáticamente el gestor de paquetes (pacman, apt, dnf, zypper, xbps, apk).
