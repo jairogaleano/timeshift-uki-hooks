@@ -1,4 +1,4 @@
-# Timeshift UKI Hooks v3.1
+# Timeshift UKI Hooks v3.2
 
 Sistema de hooks para **Timeshift** que respalda y restaura imágenes **UKI (Unified Kernel Images)** en sistemas con **Btrfs + Secure Boot**. Compatible con múltiples distribuciones Linux.
 
@@ -11,6 +11,7 @@ Sistema de hooks para **Timeshift** que respalda y restaura imágenes **UKI (Uni
 - [Desinstalación](#desinstalación)
 - [Uso](#uso)
 - [Integración con pacman](#integración-con-pacman-timeshift-autosnap)
+- [Soporte de kernel-install](#soporte-de-kernel-install)
 - [Seguridad](#seguridad)
 - [Depuración e Integración de Logs](#depuración-e-integración-de-logs)
 - [Changelog](#changelog)
@@ -215,6 +216,52 @@ sudo timeshift --restore
 
 ---
 
+## 🧩 Soporte de kernel-install
+
+Desde **v3.2** los hooks soportan de forma completa la arquitectura `kernel-install` de systemd, además de los presets clásicos de mkinitcpio.
+
+### Layout `kernel-install`
+
+Con `kernel-install` (layout `uki`, configurado en `/etc/kernel/install.conf`) los UKIs se generan con **nombres versionados** y se instalan en `$BOOT/EFI/Linux/`:
+
+```
+$BOOT/EFI/Linux/<machine-id>-<kernel-version>.efi
+```
+
+Ejemplo (Arch + Secure Boot):
+
+```
+/boot/EFI/Linux/c2224fefe655409688eccb14500b0429-7.1.6-arch1-1.efi
+```
+
+Como coexisten **múltiples versiones de kernel a la vez**, al restaurar un snapshot antiguo es crítico que la partición de arranque quede exactamente igual que cuando se tomó ese snapshot:
+
+- El **backup hook** copia todos los UKIs versionados presentes en `$BOOT/EFI/Linux/` al snapshot (sin cambios, ya soportado desde v3.1).
+- El **restore hook** (nuevo en v3.2) hace **sync inverso**: además de copiar los UKIs del snapshot, **elimina de la partición de arranque cualquier `.efi` que no esté en el snapshot** (`PRUNE_UKIS=true`). Si quedara un UKI de un kernel más nuevo (cuyos módulos ya no existen en el root restaurado), el sistema fallaría al arrancar — exactamente el problema de "unknown filesystem type" tras una actualización.
+
+Para desactivar la limpieza, edita `/etc/timeshift/restore-hooks.d/90-restore-uki` y pon `PRUNE_UKIS=false`.
+
+> **XBOOTLDR**: en sistemas con `/boot` en una partición XBOOTLDR independiente (ej. dual-boot Windows + Arch), los hooks la detectan y validan por su GUID (`bc13c2ff-...`) igual que la ESP.
+
+### Regeneración del UKI tras actualizar el kernel
+
+`kernel-install` **no regenera el UKI solo** con un `pacman -Syu`: necesita su propio hook de pacman. Si usas `kernel-install` como generador:
+
+```bash
+# Opción A: hook de kernel-install para pacman (AUR), enmascarando los de mkinitcpio
+yay -S pacman-hook-kernel-install
+sudo ln -s /dev/null /etc/pacman.d/hooks/60-mkinitcpio-remove.hook
+sudo ln -s /dev/null /etc/pacman.d/hooks/90-mkinitcpio-install.hook
+
+# Opción B: regenerar manualmente tras cada actualización de kernel
+sudo kernel-install --boot-path=/boot --esp-path=/efi add \
+  "$(cat /usr/lib/modules/*/version | head -1)" /boot/vmlinuz-linux
+```
+
+> **Alternativa simple**: el preset de mkinitcpio con `default_uki=` (p. ej. `/boot/EFI/Linux/arch-linux.efi`) sigue siendo el camino documentado y **se regenera solo** en cada `pacman -Syu`. Los hooks funcionan igual en ambos casos.
+
+---
+
 ## 🔒 Seguridad
 
 - ✅ **Integridad**: Verificación SHA256 obligatoria antes de restaurar.
@@ -246,7 +293,11 @@ Este proyecto se integra directamente con el sistema de registros de **Timeshift
 
 Para el historial completo de cambios, ver [CHANGELOG.md](CHANGELOG.md).
 
-### v3.1 (Última versión)
+### v3.2 (Última versión)
+- **Soporte completo de `kernel-install`**: pruning de UKIs obsoletos en el restore hook (sync ESP ↔ snapshot), esencial con UKIs versionados (`<machine-id>-<kver>.efi`). Configurable con `PRUNE_UKIS`.
+- Documentación del layout `kernel-install` y su integración con pacman.
+
+### v3.1
 - **Fix**: `is_esp_partition()` renombrada a `is_valid_boot_partition()`. Ahora acepta tanto ESP (`c12a7328-...`) como XBOOTLDR (`bc13c2ff-...`). Sistemas con partición XBOOTLDR independiente (dual-boot) ya no son rechazados.
 
 ### v3.0

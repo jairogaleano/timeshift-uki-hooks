@@ -29,6 +29,8 @@ Se ejecuta **despues** de restaurar un snapshot. Recupera los UKIs de `uki-backu
 
 Por cada UKI respaldado verifica su checksum SHA256 contra el `.sha256` acompanante. Si coincide el checksum y ya existe un UKI identico en el destino, lo salta. Si no, copia atomicamente: escribe a un archivo temporal con `mktemp`, verifica, luego `mv`. Verifica espacio disponible en ESP (min. 50MB). Usa `trap cleanup EXIT` que desmonta la ESP si fue montada manualmente o restaura el modo RO original.
 
+**Pruning (v3.2):** tras la copia, si `PRUNE_UKIS=true` (default), sincroniza la particion de arranque con el snapshot: elimina todo `.efi` del directorio `EFI/Linux` que **no exista** en el respaldo (y las rotaciones `.bak`). Es imprescindible con el layout `kernel-install` (`layout=uki`), donde conviven multiples UKIs versionados (`<machine-id>-<kver>.efi`): si quedara un UKI de un kernel mas nuevo cuyo `usr/lib/modules` ya no existe en el root restaurado, el arranque fallaria (mismatch kernel/modulos).
+
 ### Cobertura de escenarios
 
 | Escenario | Comportamiento |
@@ -38,6 +40,8 @@ Por cada UKI respaldado verifica su checksum SHA256 contra el `.sha256` acompana
 | **Peor caso: sistema no arranca** (kernel corrupto, UKI danado, Secure Boot falla) | El usuario arranca desde un Live USB, monta su particion Btrfs, hace chroot, ejecuta Timeshift restore. El hook detecta el chroot con `detect_chroot()` (compatible con systemd, OpenRC, runit), busca la particion EFI por PARTTYPE GUID (`c12a7328-f81f-11d2-ba4b-00a0c93ec93b`) via `lsblk`, la monta en `/tmp/esp-mount-XXXXXXXX`, restaura los UKIs y la desmonta al salir (trap). El usuario sale del chroot, reinicia y el sistema arranca con la version anterior. |
 | **ESP montada RO** | Detecta `findmnt -O ro`, remonta RW, restaura, trap devuelve a RO. |
 | Multiples ESPs | Toma la primera particion con PARTTYPE EFI. |
+| **Layout kernel-install** (`layout=uki`, v3.2) | El backup captura todos los UKIs versionados (`EFI/Linux/<machine-id>-<kver>.efi`). El restore copia los del snapshot y **elimina los obsoletos** (los que no estan en el respaldo), dejando la ESP identica al snapshot. |
+| **Restauracion de un snapshot viejo** | Si en la ESP habia UKIs de kernels mas nuevos (cuyos modulos ya no existen en el root restaurado), el prune los elimina. Evita el fallo "unknown filesystem type" en boot. |
 
 ---
 
@@ -79,6 +83,11 @@ resolve_esp_mount()
              |
              v
         Por cada UKI: cp atomico a EFI/Linux/
+             |
+             v
+        PRUNE_UKIS?  [v3.2]
+        +- true  -> elimina .efi de EFI/Linux no presentes en el respaldo
+        +- false -> conserva los UKIs no respaldados
              |
              v
         trap EXIT

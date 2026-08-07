@@ -4,6 +4,17 @@ Todas las versiones significativas de este proyecto. Formato basado en [Keep a C
 
 ---
 
+## [3.2] - 2026-08-06
+
+### Added
+- **Pruning de UKIs obsoletos** en `90-restore-uki`: tras restaurar, elimina de la partición de arranque los `.efi` que no existen en el snapshot restaurado (sync ESP ↔ snapshot). Esencial con layout `kernel-install` (`layout=uki`), donde conviven múltiples UKIs versionados (`<machine-id>-<kver>.efi`). Configurable con `PRUNE_UKIS=true/false`.
+
+### Changed
+- Versión bump a v3.2 en scripts, `install.sh`, PKGBUILD y documentación.
+- Documentación del layout `kernel-install` y su integración con pacman.
+
+---
+
 ## [3.1] - 2026-07-28
 
 ### Fixed

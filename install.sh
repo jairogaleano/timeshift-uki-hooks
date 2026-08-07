@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Instalador v3.1
+# Timeshift UKI Hooks - Instalador v3.2
 # Soporte universal: Arch, Debian, Fedora, openSUSE, Void, Gentoo, etc.
 #
 
@@ -96,7 +96,7 @@ if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
 fi
 echo "Todas las dependencias encontradas."
 
-echo "Instalando Timeshift UKI Hooks v3.1..."
+echo "Instalando Timeshift UKI Hooks v3.2..."
 
 # Crear directorios si no existen
 mkdir -p /etc/timeshift/backup-hooks.d
@@ -117,5 +117,5 @@ echo "Aplicando permisos de ejecucion..."
 chmod +x /etc/timeshift/backup-hooks.d/90-backup-uki
 chmod +x /etc/timeshift/restore-hooks.d/90-restore-uki
 
-echo "Instalacion/Actualizacion a v3.1 completada correctamente."
+echo "Instalacion/Actualizacion a v3.2 completada correctamente."
 echo "Los hooks han sido instalados con nombres estandar para compatibilidad con run-parts."

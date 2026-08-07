@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Restore Script (v3.1)
+# Timeshift UKI Hooks - Restore Script (v3.2)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -29,6 +29,10 @@ set -euo pipefail
 BACKUP_DIR="/etc/timeshift/uki-backup"
 LOG_FILE="/var/log/timeshift.log"
 MIN_ESP_SPACE_MB=50
+# Elimina de la particion de arranque los UKIs que no estan en el snapshot
+# restaurado (sync ESP <-> snapshot). Esencial con layout kernel-install,
+# donde conviven multiples UKIs versionados (<machine-id>-<kver>.efi).
+PRUNE_UKIS=true
 # ----------------------
 
 log() {
@@ -245,7 +249,7 @@ for uki_backup in "${backup_ukis[@]}"; do
     if cp --preserve=all "$uki_backup" "$temp_file"; then
         if mv "$temp_file" "$UKI_DIR/$basename"; then
             log "INFO" "Restaurado: $basename"
-            ((restored_count++))
+            restored_count=$((restored_count + 1))
         else
             log "ERROR" "No se pudo completar la copia atomica de $basename"
             rm -f "$temp_file"
@@ -264,6 +268,53 @@ for uki_backup in "${backup_ukis[@]}"; do
     fi
 done
 
+# 7b. Pruning de UKIs obsoletos en la particion de arranque
+# Con layout kernel-install conviven multiples UKIs versionados
+# (<machine-id>-<kver>.efi). Si queda en la ESP un UKI que no pertenece al
+# snapshot restaurado, sus modulos no existiran en el root restaurado y el
+# sistema no arrancaria (mismatch kernel/modulos). Por eso sincronizamos la
+# particion de arranque con el contenido del snapshot.
+pruned_count=0
+if [ "$PRUNE_UKIS" = true ]; then
+    log "INFO" "Pruning: sincronizando $UKI_DIR con el snapshot restaurado..."
+
+    backup_names=()
+    for uki_backup in "${backup_ukis[@]}"; do
+        [ -f "$uki_backup" ] || continue
+        backup_names+=("${uki_backup##*/}")
+    done
+
+    shopt -s nullglob
+    for existing in "$UKI_DIR"/*.efi; do
+        [ -f "$existing" ] || continue
+        base="${existing##*/}"
+
+        # Siempre eliminar rotaciones viejas (.bak)
+        if [[ "$base" == *".bak."* || "$base" == *".bak.efi" ]]; then
+            rm -f "$existing"
+            log "INFO" "Pruned .bak obsoleto: $base"
+            pruned_count=$((pruned_count + 1))
+            continue
+        fi
+
+        # Eliminar UKIs que no estan en el snapshot respaldado
+        if ! printf '%s\n' "${backup_names[@]}" | grep -qx -- "$base"; then
+            rm -f "$existing"
+            log "INFO" "Pruned UKI obsoleto (no existe en el snapshot): $base"
+            pruned_count=$((pruned_count + 1))
+        fi
+    done
+    shopt -u nullglob
+
+    if [ "$pruned_count" -gt 0 ]; then
+        log "INFO" "Pruning completado: $pruned_count archivos eliminados"
+    else
+        log "INFO" "Pruning completado: sin archivos obsoletos"
+    fi
+else
+    log "INFO" "Pruning desactivado (PRUNE_UKIS=false). Se conservan UKIs no respaldados."
+fi
+
 # 8. Devolver la particion a modo SOLO LECTURA si originalmente estaba asi
 if [ "$WAS_RO" = true ] && [ -n "$TARGET_MNT" ]; then
     log "INFO" "Restaurando $TARGET_MNT a modo SOLO LECTURA..."
@@ -271,8 +322,8 @@ if [ "$WAS_RO" = true ] && [ -n "$TARGET_MNT" ]; then
 fi
 
 # 9. Reportar resultado final
-if [ "$restored_count" -gt 0 ]; then
-    log "INFO" "EXITO: $restored_count UKIs restaurados correctamente"
+if [ "$restored_count" -gt 0 ] || [ "$pruned_count" -gt 0 ]; then
+    log "INFO" "EXITO: $restored_count UKIs restaurados, $pruned_count obsoletos eliminados"
 else
     log "INFO" "Finalizado: Sin archivos restaurados (el respaldo podria no contener UKIs .efi)"
 fi
