@@ -17,8 +17,17 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 # Contexto: Timeshift crea snapshots de Btrfs que protegen /, pero no la particion EFI (ESP)
-# donde residen los UKIs. Este hook respalda los UKIs actuales en /etc/timeshift/uki-backup/
-# para que se incluyan en el snapshot de Btrfs y puedan restaurarse posteriormente.
+# donde residen los UKIs.
+#
+# IMPORTANTE (semantica de Timeshift): los backup hooks se ejecutan DESPUES de crear
+# el snapshot (run_post_backup_hooks, Main.vala) y Timeshift exporta TS_SNAPSHOT_PATH
+# con la ruta del snapshot recien creado. Como un snapshot Btrfs es un punto en el
+# tiempo (reflink), copiar los UKIs solo en /etc/timeshift/uki-backup del sistema vivo
+# NO los incluiria en el snapshot. Por eso este hook escribe los UKIs en DOS lugares:
+#   1. /etc/timeshift/uki-backup          (sistema vivo)
+#   2. $TS_SNAPSHOT_PATH/.../uki-backup   (DENTRO del snapshot recien creado)
+# Asi cada snapshot queda autocontenido: contiene los UKIs que coinciden con su propio
+# kernel/modulos y el restore puede devolverlos a la ESP correctamente.
 #
 
 set -euo pipefail
@@ -72,6 +81,99 @@ detect_uki_dir() {
     return 1
 }
 
+# Copia los UKIs actuales de la ESP a un directorio destino.
+# Selectivo: solo copia los que cambiaron (comparacion SHA256 per-file).
+copy_ukis() {
+    local dest="$1"
+    local count=0
+
+    if [ ! -d "$dest" ]; then
+        mkdir -p "$dest"
+    fi
+
+    # Limpiar archivos .bak huerfanos en destino
+    shopt -s nullglob
+    for bak_file in "$dest"/*.bak.*.efi "$dest"/*.bak.efi "$dest"/*.bak.*.efi.sha256 "$dest"/*.bak.efi.sha256; do
+        [ -f "$bak_file" ] || continue
+        rm -f "$bak_file"
+        log "INFO" "Limpiado .bak huerfano en respaldo: ${bak_file##*/}"
+    done
+    shopt -u nullglob
+
+    # Limpiar archivos .sha256 huerfanos en destino (de UKIs que ya no existen)
+    for sha_file in "$dest"/*.sha256; do
+        [ -f "$sha_file" ] || continue
+        efi_file="${sha_file%.sha256}"
+        if [ ! -f "$efi_file" ]; then
+            rm -f "$sha_file"
+            log "INFO" "Limpiado .sha256 huerfano: ${sha_file##*/}"
+        fi
+    done
+
+    # Deteccion rapida: si todos los UKIs ya estan identicos, no tocar nada
+    local needs_backup=false
+    for uki in "${uki_files[@]}"; do
+        [ -f "$uki" ] || continue
+        local basename="${uki##*/}"
+
+        # Omitir archivos .bak (rotaciones viejas)
+        if [[ "$basename" == *".bak."* || "$basename" == *".bak.efi" ]]; then
+            continue
+        fi
+
+        if [ -f "$dest/$basename" ]; then
+            local current_sha backup_sha
+            current_sha=$(sha256sum "$uki" | awk '{print $1}')
+            backup_sha=$(sha256sum "$dest/$basename" | awk '{print $1}')
+            if [ "$current_sha" == "$backup_sha" ]; then
+                continue
+            fi
+        fi
+        needs_backup=true
+        break
+    done
+
+    if [ "$needs_backup" = false ]; then
+        log "INFO" "Respaldo en $dest actualizado (UKIs identicos). Sin cambios."
+        return 0
+    fi
+
+    log "INFO" "Iniciando respaldo de UKIs en $dest"
+
+    for uki in "${uki_files[@]}"; do
+        [ -f "$uki" ] || continue
+        local basename="${uki##*/}"
+
+        # Omitir archivos .bak (rotaciones viejas)
+        if [[ "$basename" == *".bak."* || "$basename" == *".bak.efi" ]]; then
+            continue
+        fi
+
+        local current_sha backup_sha
+        current_sha=$(sha256sum "$uki" | awk '{print $1}')
+        if [ -f "$dest/$basename" ]; then
+            backup_sha=$(sha256sum "$dest/$basename" | awk '{print $1}')
+            if [ "$current_sha" == "$backup_sha" ]; then
+                continue
+            fi
+        fi
+
+        if cp --preserve=all "$uki" "$dest/$basename"; then
+            echo "$current_sha" > "$dest/$basename.sha256"
+            log "INFO" "Respaldo exitoso: $basename -> $dest"
+            count=$((count + 1))
+        else
+            log "ERROR" "Fallo en copia de: $basename -> $dest"
+            return 1
+        fi
+    done
+
+    if [ "$count" -gt 0 ]; then
+        log "INFO" "Finalizado: $count UKIs respaldados en $dest"
+    fi
+    return 0
+}
+
 mkdir -p "$BACKUP_DIR"
 
 UKI_DIR=$(detect_uki_dir) || true
@@ -93,7 +195,7 @@ fi
 
 log "INFO" "Iniciando analisis de UKIs en $UKI_DIR"
 
-# Limpiar archivos .bak huerfanos en UKI_DIR (rotaciones viejas que no deberian estar)
+# Limpiar archivos .bak huerfanos en la ESP (rotaciones viejas que no deberian estar)
 shopt -s nullglob
 for bak_file in "$UKI_DIR"/*.bak.*.efi "$UKI_DIR"/*.bak.efi; do
     [ -f "$bak_file" ] || continue
@@ -102,87 +204,33 @@ for bak_file in "$UKI_DIR"/*.bak.*.efi "$UKI_DIR"/*.bak.efi; do
 done
 shopt -u nullglob
 
-# Limpiar archivos .bak huerfanos en BACKUP_DIR
-shopt -s nullglob
-for bak_file in "$BACKUP_DIR"/*.bak.*.efi "$BACKUP_DIR"/*.bak.efi "$BACKUP_DIR"/*.bak.*.efi.sha256 "$BACKUP_DIR"/*.bak.efi.sha256; do
-    [ -f "$bak_file" ] || continue
-    rm -f "$bak_file"
-    log "INFO" "Limpiado .bak huerfano en respaldo: ${bak_file##*/}"
-done
-shopt -u nullglob
-
-needs_backup=false
-for uki in "${uki_files[@]}"; do
-    [ -f "$uki" ] || continue
-    basename="${uki##*/}"
-
-    # Omitir archivos .bak (rotaciones viejas)
-    if [[ "$basename" == *".bak."* || "$basename" == *".bak.efi" ]]; then
-        continue
-    fi
-
-    if [ -f "$BACKUP_DIR/$basename" ]; then
-        current_sha=$(sha256sum "$uki" | awk '{print $1}')
-        backup_sha=$(sha256sum "$BACKUP_DIR/$basename" | awk '{print $1}')
-
-        if [ "$current_sha" == "$backup_sha" ]; then
-            log "INFO" "$basename es identico al respaldo actual. No se requiere nuevo respaldo."
-            continue
-        fi
-    fi
-    needs_backup=true
-done
-
-if [ "$needs_backup" = false ]; then
-    log "INFO" "Todos los UKIs estan actualizados en el respaldo. Saltando proceso de copia."
-    exit 0
+# 1. Copia en el sistema vivo (/etc/timeshift/uki-backup)
+if ! copy_ukis "$BACKUP_DIR"; then
+    exit 1
 fi
 
-log "INFO" "Iniciando respaldo de UKIs desde $UKI_DIR"
-
-# Limpiar archivos .sha256 huerfanos (de UKIs que ya no existen)
-for sha_file in "$BACKUP_DIR"/*.sha256; do
-    [ -f "$sha_file" ] || continue
-    efi_file="${sha_file%.sha256}"
-    if [ ! -f "$efi_file" ]; then
-        rm -f "$sha_file"
-        log "INFO" "Limpiado .sha256 huerfano: ${sha_file##*/}"
-    fi
-done
-
-cp_count=0
-for uki in "${uki_files[@]}"; do
-    [ -f "$uki" ] || continue
-
-    basename="${uki##*/}"
-
-    # Omitir archivos .bak (rotaciones viejas)
-    if [[ "$basename" == *".bak."* || "$basename" == *".bak.efi" ]]; then
-        continue
-    fi
-
-    current_sha=$(sha256sum "$uki" | awk '{print $1}')
-    if [ -f "$BACKUP_DIR/$basename" ]; then
-        backup_sha=$(sha256sum "$BACKUP_DIR/$basename" | awk '{print $1}')
-        if [ "$current_sha" == "$backup_sha" ]; then
-            continue
-        fi
-    fi
-
-    if cp --preserve=all "$uki" "$BACKUP_DIR/$basename"; then
-        echo "$current_sha" > "$BACKUP_DIR/$basename.sha256"
-        log "INFO" "Respaldo exitoso: $basename"
-        cp_count=$((cp_count + 1))
+# 2. Copia DENTRO del snapshot recien creado (TS_SNAPSHOT_PATH)
+SNAPSHOT_BACKUP_DIR=""
+if [ -n "${TS_SNAPSHOT_PATH:-}" ]; then
+    # Layout Btrfs: el snapshot contiene los subvolumenes @ y @home
+    if [ -d "$TS_SNAPSHOT_PATH/@/etc" ]; then
+        SNAPSHOT_BACKUP_DIR="$TS_SNAPSHOT_PATH/@/etc/timeshift/uki-backup"
+    # Layout rsync: el snapshot contiene el arbol de archivos directamente
+    elif [ -d "$TS_SNAPSHOT_PATH/etc" ]; then
+        SNAPSHOT_BACKUP_DIR="$TS_SNAPSHOT_PATH/etc/timeshift/uki-backup"
     else
-        log "ERROR" "Fallo en copia de: $basename"
+        log "WARN" "TS_SNAPSHOT_PATH no contiene un sistema reconocible; el snapshot no quedara autocontenido"
+    fi
+fi
+
+if [ -n "$SNAPSHOT_BACKUP_DIR" ]; then
+    log "INFO" "Escribiendo UKIs dentro del snapshot (TS_SNAPSHOT_PATH): $SNAPSHOT_BACKUP_DIR"
+    if ! copy_ukis "$SNAPSHOT_BACKUP_DIR"; then
+        log "ERROR" "Fallo al escribir los UKIs dentro del snapshot"
         exit 1
     fi
-done
-
-if [ "$cp_count" -gt 0 ]; then
-    log "INFO" "Finalizado: $cp_count UKIs respaldados"
 else
-    log "INFO" "Finalizado: Sin cambios"
+    log "INFO" "Sin TS_SNAPSHOT_PATH: solo se actualizo la copia en $BACKUP_DIR"
 fi
 
 exit 0

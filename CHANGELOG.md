@@ -9,9 +9,13 @@ Todas las versiones significativas de este proyecto. Formato basado en [Keep a C
 ### Added
 - **Pruning de UKIs obsoletos** en `90-restore-uki`: tras restaurar, elimina de la partición de arranque los `.efi` que no existen en el snapshot restaurado (sync ESP ↔ snapshot). Esencial con layout `kernel-install` (`layout=uki`), donde conviven múltiples UKIs versionados (`<machine-id>-<kver>.efi`). Configurable con `PRUNE_UKIS=true/false`.
 
+### Fixed
+- **Snapshots autocontenidos (semántica de Timeshift)**: los backup hooks se ejecutan **después** de crear el snapshot (`run_post_backup_hooks`, con `TS_SNAPSHOT_PATH`), no antes. El backup hook ahora además de `/etc/timeshift/uki-backup/` escribe los UKIs **dentro del snapshot recién creado** (Btrfs: `$TS_SNAPSHOT_PATH/@/etc/timeshift/uki-backup/`, rsync: `$TS_SNAPSHOT_PATH/etc/timeshift/uki-backup/`). Sin esto cada snapshot quedaba con el respaldo del anterior (desfase de 1) y el prune de v3.2 podía borrar el UKI correcto de la ESP.
+- Bug latente bajo `set -e`: `((contador++))` abortaba el hook (el post-incremento devuelve 0) → sustituido por `contador=$((contador + 1))` en los contadores del restore.
+
 ### Changed
 - Versión bump a v3.2 en scripts, `install.sh`, PKGBUILD y documentación.
-- Documentación del layout `kernel-install` y su integración con pacman.
+- Documentación del layout `kernel-install`, de la semántica post-snapshot de Timeshift y del doble destino del backup hook.
 
 ---
 

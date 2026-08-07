@@ -8,18 +8,26 @@ Son dos hooks que integran UKIs (Unified Kernel Images) con el sistema de snapsh
 
 ## Backup Hook (`90-backup-uki`)
 
-Se ejecuta **antes** de cada snapshot. Su funcion es copiar los UKIs actuales desde la ESP a `/etc/timeshift/uki-backup/`. Como `/etc` esta dentro de la raiz Btrfs, los UKIs quedan **incluidos en el snapshot**.
+Timeshift ejecuta los backup hooks **despues** de crear el snapshot (`run_post_backup_hooks`), exportando `TS_SNAPSHOT_PATH`. Como el snapshot Btrfs es un punto en el tiempo (reflink), el hook escribe los UKIs en **dos destinos**:
 
-Selecciona archivos `.efi` del directorio `EFI/Linux` en la ESP. Para cada uno calcula SHA256: si ya existe un respaldo identico en `uki-backup/`, lo salta; si cambio, lo copia y escribe su `.sha256`. Antes de copiar, limpia archivos `.sha256` huerfanos (cuyo UKI ya no existe en la ESP). Verifica que la particion sea la ESP real mediante PARTTYPE GUID (`c12a7328-f81f-11d2-ba4b-00a0c93ec93b`) para evitar confusión con USBs.
+1. `/etc/timeshift/uki-backup/` — sistema vivo (fallback/consulta rapida).
+2. `$TS_SNAPSHOT_PATH/.../uki-backup/` — **dentro del snapshot recien creado**, dejandolo autocontenido:
+   - Layout Btrfs: `$TS_SNAPSHOT_PATH/@/etc/timeshift/uki-backup/`.
+   - Layout rsync: `$TS_SNAPSHOT_PATH/etc/timeshift/uki-backup/`.
+
+Esto garantiza que cada snapshot viaje con los UKIs que coinciden con sus modulos del kernel, sin depender del snapshot anterior.
+
+Selecciona archivos `.efi` del directorio `EFI/Linux` en la ESP. Para cada uno calcula SHA256: si ya existe un respaldo identico en el destino, lo salta; si cambio, lo copia y escribe su `.sha256`. Antes de copiar, limpia archivos `.sha256` huerfanos y rotaciones `.bak` (cuyo UKI ya no existe en la ESP). Verifica que la particion sea la ESP real mediante PARTTYPE GUID (`c12a7328-f81f-11d2-ba4b-00a0c93ec93b`) para evitar confusion con USBs.
 
 ### Cobertura de escenarios
 
 | Escenario | Comportamiento |
 |---|---|
-| Normal (snapshot periodico) | Copia solo UKIs cambiados a `uki-backup/`. El snapshot contiene modulos + UKI consistentes. |
+| Normal (snapshot periodico) | Copia solo UKIs cambiados a `uki-backup/` (vivo y dentro del snapshot). El snapshot contiene modulos + UKI consistentes. |
 | Sin cambios entre snapshots | Omite copia (SHA256 match). Cero I/O innecesario. |
 | ESP montada en `/boot`, `/efi` o `/boot/efi` | Detecta dinamicamente con `findmnt -t vfat` + `EFI/Linux`. |
 | Sin UKIs en ESP | Log WARN y sale con 0 (no bloquea el snapshot). |
+| `TS_SNAPSHOT_PATH` no exportado o layout desconocido | Copia solo al sistema vivo y emite WARN (compatibilidad hacia atras). |
 
 ---
 

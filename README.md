@@ -34,9 +34,10 @@ En sistemas Linux con **systemd-boot** y **Secure Boot**, las imágenes UKI (fic
 Este proyecto sincroniza los UKIs con los snapshots de Btrfs mediante hooks:
 
 1. **Backup Hook** (`/etc/timeshift/backup-hooks.d/90-backup-uki`)
-   - Se ejecuta **antes** de crear el snapshot
+   - Timeshift lo ejecuta **después** de crear el snapshot (`run_post_backup_hooks`) y le exporta `TS_SNAPSHOT_PATH`
    - Detecta dinámicamente la ESP (verifica PARTTYPE para evitar USBs)
-   - Respalda UKIs en `/etc/timeshift/uki-backup/` (dentro del snapshot)
+   - Respalda UKIs en `/etc/timeshift/uki-backup/`
+   - Escribe los UKIs **dentro del snapshot recién creado** vía `TS_SNAPSHOT_PATH` (Btrfs: `@/etc/timeshift/uki-backup/`, rsync: `etc/timeshift/uki-backup/`), dejándolo **autocontenido**
    - **Selectivo**: solo copia UKIs que cambiaron (comparación SHA256 per-file)
    - Limpia archivos `.bak` y `.sha256` huérfanos automáticamente
 
@@ -123,9 +124,9 @@ ls /etc/timeshift/restore-hooks.d/
 Una vez instalados, los hooks se ejecutan **automáticamente**:
 
 1. **Al crear un snapshot** (manual o programado):
-   - Timeshift ejecuta `90-backup-uki` antes de crear el snapshot
-   - Los UKIs se respaldan en `/etc/timeshift/uki-backup/`
-   - El snapshot incluye los UKIs actualizados
+   - Timeshift crea el snapshot y luego ejecuta `90-backup-uki` (`run_post_backup_hooks`)
+   - El hook escribe los UKIs en `/etc/timeshift/uki-backup/` y **dentro del snapshot recién creado** (vía `TS_SNAPSHOT_PATH`)
+   - El snapshot queda autocontenido: UKIs y módulos del kernel coincidentes
 
 2. **Al restaurar un snapshot**:
    - Timeshift ejecuta `90-restore-uki` después de restaurar
@@ -141,9 +142,10 @@ sudo pacman -Syu
   └─ 00-timeshift-autosnap.hook (pre-transacción)
        └─ timeshift-autosnap
             └─ timeshift --create
-                 ├─ 90-backup-uki (antes del snapshot)
-                 │    └─ Copia UKIs de ESP → /etc/timeshift/uki-backup/
-                 └─ Snapshot creado (incluye los UKIs)
+                 ├─ Snapshot creado
+                 └─ 90-backup-uki (después del snapshot)
+                      ├─ Copia UKIs de ESP → /etc/timeshift/uki-backup/
+                      └─ Copia UKIs de ESP → snapshot (TS_SNAPSHOT_PATH)
 ```
 
 **Configuración** (`/etc/timeshift-autosnap.conf`):
@@ -188,13 +190,13 @@ findmnt -t vfat
 # pacman crea el snapshot automáticamente antes de actualizar
 sudo pacman -Syu
 # 1. timeshift-autosnap hook se ejecuta (pre-transacción)
-# 2. 90-backup-uki respalda los UKIs
-# 3. Se crea el snapshot con los UKIs incluidos
+# 2. Se crea el snapshot
+# 3. 90-backup-uki escribe los UKIs dentro del snapshot (autocontenido)
 # 4. Se instalan las actualizaciones
 
 # Si algo sale mal después de la actualización:
 sudo timeshift --restore
-# 5. 90-restore-uki devuelve los UKIs a la ESP
+# 5. 90-restore-uki devuelve los UKIs de ese snapshot a la ESP
 # 6. Reiniciar
 ```
 
@@ -236,7 +238,7 @@ Ejemplo (Arch + Secure Boot):
 
 Como coexisten **múltiples versiones de kernel a la vez**, al restaurar un snapshot antiguo es crítico que la partición de arranque quede exactamente igual que cuando se tomó ese snapshot:
 
-- El **backup hook** copia todos los UKIs versionados presentes en `$BOOT/EFI/Linux/` al snapshot (sin cambios, ya soportado desde v3.1).
+- El **backup hook** copia todos los UKIs versionados presentes en `$BOOT/EFI/Linux/` y los escribe **dentro del snapshot recién creado** (vía `TS_SNAPSHOT_PATH`), dejando cada snapshot autocontenido.
 - El **restore hook** (nuevo en v3.2) hace **sync inverso**: además de copiar los UKIs del snapshot, **elimina de la partición de arranque cualquier `.efi` que no esté en el snapshot** (`PRUNE_UKIS=true`). Si quedara un UKI de un kernel más nuevo (cuyos módulos ya no existen en el root restaurado), el sistema fallaría al arrancar — exactamente el problema de "unknown filesystem type" tras una actualización.
 
 Para desactivar la limpieza, edita `/etc/timeshift/restore-hooks.d/90-restore-uki` y pon `PRUNE_UKIS=false`.
