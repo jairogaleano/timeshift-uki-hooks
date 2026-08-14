@@ -39,6 +39,7 @@ Este proyecto sincroniza los UKIs con los snapshots de Btrfs mediante hooks:
    - Respalda UKIs en `/etc/timeshift/uki-backup/`
    - Escribe los UKIs **dentro del snapshot recién creado** vía `TS_SNAPSHOT_PATH` (Btrfs: `@/etc/timeshift/uki-backup/`, rsync: `etc/timeshift/uki-backup/`), dejándolo **autocontenido**
    - **Selectivo**: solo copia UKIs que cambiaron (comparación SHA256 per-file)
+   - **Purga UKIs obsoletos** (`PRUNE_OLD_UKIS=true`): cada snapshot viaja solo con el UKI del kernel actual (`uname -r`); elimina versiones anteriores y el preset clásico `arch-linux.efi` en máquinas con `kernel-install`
    - Limpia archivos `.bak` y `.sha256` huérfanos automáticamente
 
 2. **Restore Hook** (`/etc/timeshift/restore-hooks.d/90-restore-uki`)
@@ -238,10 +239,12 @@ Ejemplo (Arch + Secure Boot):
 
 Como coexisten **múltiples versiones de kernel a la vez**, al restaurar un snapshot antiguo es crítico que la partición de arranque quede exactamente igual que cuando se tomó ese snapshot:
 
-- El **backup hook** copia todos los UKIs versionados presentes en `$BOOT/EFI/Linux/` y los escribe **dentro del snapshot recién creado** (vía `TS_SNAPSHOT_PATH`), dejando cada snapshot autocontenido.
-- El **restore hook** (nuevo en v3.2) hace **sync inverso**: además de copiar los UKIs del snapshot, **elimina de la partición de arranque cualquier `.efi` que no esté en el snapshot** (`PRUNE_UKIS=true`). Si quedara un UKI de un kernel más nuevo (cuyos módulos ya no existen en el root restaurado), el sistema fallaría al arrancar — exactamente el problema de "unknown filesystem type" tras una actualización.
+- El **backup hook** (v3.3) respalda **solo el UKI vigente** — el del kernel actualmente en ejecución (`uname -r`) — y lo escribe **dentro del snapshot recién creado** (vía `TS_SNAPSHOT_PATH`), dejando cada snapshot autocontenido. Con `PRUNE_OLD_UKIS=true` (por defecto) además **purga del respaldo** los `.efi` que no corresponden al kernel actual: versiones anteriores de UKIs kernel-install y el preset clásico `arch-linux.efi` (legacy tras el cambio a kernel-install). Así cada snapshot viaja solo con su UKI y al restaurar se devuelve exactamente el del momento de la snapshot.
+- El **restore hook** (v3.2) hace **sync inverso**: además de copiar los UKIs del snapshot, **elimina de la partición de arranque cualquier `.efi` que no esté en el snapshot** (`PRUNE_UKIS=true`). Si quedara un UKI de un kernel más nuevo (cuyos módulos ya no existen en el root restaurado), el sistema fallaría al arrancar — exactamente el problema de "unknown filesystem type" tras una actualización.
 
-Para desactivar la limpieza, edita `/etc/timeshift/restore-hooks.d/90-restore-uki` y pon `PRUNE_UKIS=false`.
+Para desactivar la limpieza:
+- Restore: edita `/etc/timeshift/restore-hooks.d/90-restore-uki` y pon `PRUNE_UKIS=false`.
+- Backup: edita `/etc/timeshift/backup-hooks.d/90-backup-uki` y pon `PRUNE_OLD_UKIS=false` (conserva todos los UKIs versionados acumulados).
 
 > **XBOOTLDR**: en sistemas con `/boot` en una partición XBOOTLDR independiente (ej. dual-boot Windows + Arch), los hooks la detectan y validan por su GUID (`bc13c2ff-...`) igual que la ESP.
 
@@ -295,7 +298,10 @@ Este proyecto se integra directamente con el sistema de registros de **Timeshift
 
 Para el historial completo de cambios, ver [CHANGELOG.md](CHANGELOG.md).
 
-### v3.2 (Última versión)
+### v3.3 (Última versión)
+- **`PRUNE_OLD_UKIS` (backup hook)**: cada snapshot viaja **solo con el UKI del sistema actual** (`uname -r`). Con layout `kernel-install` se eliminan del respaldo los `.efi` obsoletos (versiones anteriores y el preset clásico `arch-linux.efi` legacy), evitando que UKIs de kernels viejos se acumulen en las snapshots y sean devueltos a la partición de arranque al restaurar. Configurable con `PRUNE_OLD_UKIS`.
+
+### v3.2
 - **Soporte completo de `kernel-install`**: pruning de UKIs obsoletos en el restore hook (sync ESP ↔ snapshot), esencial con UKIs versionados (`<machine-id>-<kver>.efi`). Configurable con `PRUNE_UKIS`.
 - Documentación del layout `kernel-install` y su integración con pacman.
 

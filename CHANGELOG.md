@@ -4,6 +4,19 @@ Todas las versiones significativas de este proyecto. Formato basado en [Keep a C
 
 ---
 
+## [3.3] - 2026-08-13
+
+### Added
+- **`PRUNE_OLD_UKIS`** (backup hook): cada snapshot viaja **solo con el UKI del sistema actual** (`uname -r`). Con layout `kernel-install` el backup hook detecta los UKIs versionados (`<machine-id>-<kver>.efi`) y elimina del respaldo (vivo y dentro del snapshot) los `.efi` que no pertenecen al kernel en ejecución, incluyendo el preset clásico `arch-linux.efi` (legacy tras el cambio a kernel-install). Así, al restaurar se devuelve exactamente el UKI del momento de la snapshot. Configurable con `PRUNE_OLD_UKIS=true/false` (por defecto `true`).
+
+### Fixed
+- El backup hook era **aditivo**: solo añadía UKIs cambiados pero nunca purgaba los obsoletos, así que `uki-backup` acumulaba UKIs de kernels antiguos (y del preset clásico pre-kernel-install) que se incrustaban en cada snapshot y luego eran devueltos a la partición de arranque al restaurar.
+
+### Changed
+- Versión bump a v3.3 en scripts, PKGBUILD y documentación.
+
+---
+
 ## [3.2] - 2026-08-06
 
 ### Added

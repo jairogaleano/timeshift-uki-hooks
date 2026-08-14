@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Backup Script (v3.2)
+# Timeshift UKI Hooks - Backup Script (v3.3)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -35,6 +35,11 @@ set -euo pipefail
 # --- CONFIGURACION ---
 BACKUP_DIR="/etc/timeshift/uki-backup"
 LOG_FILE="/var/log/timeshift.log"
+# Elimina del respaldo los UKIs que no corresponden al kernel actualmente en
+# ejecucion (uname -r). Con layout kernel-install cada snapshot viaja SOLO con
+# el UKI vigente, para que al restaurar se devuelva exactamente el del momento
+# de la snapshot. Desactivar conserva todos los UKIs versionados acumulados.
+PRUNE_OLD_UKIS=true
 # ----------------------
 
 log() {
@@ -81,6 +86,67 @@ detect_uki_dir() {
     return 1
 }
 
+# Calcula el conjunto de UKIs "vigentes" de la ESP (los del kernel actualmente
+# en ejecucion, uname -r). Con layout kernel-install conviven multiples UKIs
+# versionados (<machine-id>-<kver>.efi); en ese modo cada snapshot debe viajar
+# SOLO con el UKI vigente, para que al restaurar se devuelva exactamente el del
+# momento de la snapshot. El preset clasico (arch-linux.efi) se conserva en
+# maquinas sin kernel-install si sigue existiendo en la ESP.
+compute_current_ukis() {
+    CURRENT_KVER="$(uname -r)"
+    HAS_VERSIONED=false
+    current_uki_files=()
+    current_uki_names=()
+
+    for uki in "${uki_files[@]}"; do
+        [[ "${uki##*/}" =~ ^[0-9a-f]{32}-.+\.efi$ ]] && HAS_VERSIONED=true
+    done
+
+    for uki in "${uki_files[@]}"; do
+        local base="${uki##*/}"
+
+        if [[ "$base" =~ ^[0-9a-f]{32}-.+\.efi$ ]]; then
+            # UKI versionado: vigente solo si pertenece al kernel en ejecucion
+            [[ "$base" == *"-${CURRENT_KVER}.efi" ]] || continue
+        elif [ "$HAS_VERSIONED" = true ]; then
+            # Con kernel-install el preset clasico (arch-linux.efi) es legacy
+            continue
+        fi
+
+        current_uki_files+=("$uki")
+        current_uki_names+=("$base")
+    done
+
+    # Fallback: si no hay ningun UKI del kernel actual (p.ej. generacion
+    # pendiente), no dejar el snapshot sin respaldo ni purgar lo existente
+    if [ ${#current_uki_files[@]} -eq 0 ]; then
+        current_uki_files=("${uki_files[@]}")
+        current_uki_names=()
+        for uki in "${current_uki_files[@]}"; do
+            current_uki_names+=("${uki##*/}")
+        done
+    fi
+}
+
+# Purga en el destino los UKIs que ya no estan en el conjunto vigente
+prune_stale_ukis() {
+    local dest="$1"
+    shopt -s nullglob
+    for existing in "$dest"/*.efi; do
+        [ -f "$existing" ] || continue
+        local base="${existing##*/}"
+
+        # Rotaciones viejas (.bak) se limpian por separado
+        [[ "$base" == *".bak."* || "$base" == *".bak.efi" ]] && continue
+
+        if ! printf '%s\n' "${current_uki_names[@]}" | grep -qx -- "$base"; then
+            rm -f "$existing" "${existing%.efi}.efi.sha256"
+            log "INFO" "Pruned UKI obsoleto (no corresponde al kernel actual): $base"
+        fi
+    done
+    shopt -u nullglob
+}
+
 # Copia los UKIs actuales de la ESP a un directorio destino.
 # Selectivo: solo copia los que cambiaron (comparacion SHA256 per-file).
 copy_ukis() {
@@ -110,9 +176,14 @@ copy_ukis() {
         fi
     done
 
+    # Purgar UKIs obsoletos que ya no corresponden al kernel actual
+    if [ "$PRUNE_OLD_UKIS" = true ]; then
+        prune_stale_ukis "$dest"
+    fi
+
     # Deteccion rapida: si todos los UKIs ya estan identicos, no tocar nada
     local needs_backup=false
-    for uki in "${uki_files[@]}"; do
+    for uki in "${current_uki_files[@]}"; do
         [ -f "$uki" ] || continue
         local basename="${uki##*/}"
 
@@ -140,7 +211,7 @@ copy_ukis() {
 
     log "INFO" "Iniciando respaldo de UKIs en $dest"
 
-    for uki in "${uki_files[@]}"; do
+    for uki in "${current_uki_files[@]}"; do
         [ -f "$uki" ] || continue
         local basename="${uki##*/}"
 
@@ -203,6 +274,9 @@ for bak_file in "$UKI_DIR"/*.bak.*.efi "$UKI_DIR"/*.bak.efi; do
     log "INFO" "Limpiado .bak huerfano en ESP: ${bak_file##*/}"
 done
 shopt -u nullglob
+
+# Conjunto de UKIs vigentes (solo los del kernel actual)
+compute_current_ukis
 
 # 1. Copia en el sistema vivo (/etc/timeshift/uki-backup)
 if ! copy_ukis "$BACKUP_DIR"; then
