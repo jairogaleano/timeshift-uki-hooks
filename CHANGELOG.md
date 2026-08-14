@@ -11,6 +11,7 @@ Todas las versiones significativas de este proyecto. Formato basado en [Keep a C
 
 ### Fixed
 - El backup hook era **aditivo**: solo añadía UKIs cambiados pero nunca purgaba los obsoletos, así que `uki-backup` acumulaba UKIs de kernels antiguos (y del preset clásico pre-kernel-install) que se incrustaban en cada snapshot y luego eran devueltos a la partición de arranque al restaurar.
+- **Ruta del checksum en el restore hook**: buscaba `"<UKI>".sha256` (p. ej. `arch-linux.sha256`) pero el backup hook escribe `"<UKI>.efi.sha256"` (`arch-linux.efi.sha256`). El desajuste hacía que la verificación de integridad nunca se ejecutara (siempre caía en "continuando sin verificación") y que la optimización de "saltar si ya es idéntico" nunca se disparara. Corregido: `sha_file` ahora usa el nombre completo del UKI (`$uki_backup.sha256`).
 
 ### Changed
 - Versión bump a v3.3 en scripts, PKGBUILD y documentación.

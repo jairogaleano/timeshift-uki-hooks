@@ -47,7 +47,8 @@ Este proyecto sincroniza los UKIs con los snapshots de Btrfs mediante hooks:
    - Detecta y monta la ESP dinámicamente (incluso en entornos chroot/Live USB)
    - Verifica espacio disponible antes de copiar
    - Devuelve los UKIs a la ESP con copia atómica (`mktemp + mv`)
-   - **Inteligente**: salta archivos que ya son idénticos
+   - **Verifica integridad**: calcula el SHA256 de cada UKI respaldado y lo compara con el checksum guardado (`<UKI>.efi.sha256`); aborta si no coincide
+   - **Inteligente**: salta archivos que ya son idénticos en el destino (evita escrituras innecesarias a la ESP)
 
 ---
 
@@ -240,7 +241,7 @@ Ejemplo (Arch + Secure Boot):
 Como coexisten **múltiples versiones de kernel a la vez**, al restaurar un snapshot antiguo es crítico que la partición de arranque quede exactamente igual que cuando se tomó ese snapshot:
 
 - El **backup hook** (v3.3) respalda **solo el UKI vigente** — el del kernel actualmente en ejecución (`uname -r`) — y lo escribe **dentro del snapshot recién creado** (vía `TS_SNAPSHOT_PATH`), dejando cada snapshot autocontenido. Con `PRUNE_OLD_UKIS=true` (por defecto) además **purga del respaldo** los `.efi` que no corresponden al kernel actual: versiones anteriores de UKIs kernel-install y el preset clásico `arch-linux.efi` (legacy tras el cambio a kernel-install). Así cada snapshot viaja solo con su UKI y al restaurar se devuelve exactamente el del momento de la snapshot.
-- El **restore hook** (v3.2) hace **sync inverso**: además de copiar los UKIs del snapshot, **elimina de la partición de arranque cualquier `.efi` que no esté en el snapshot** (`PRUNE_UKIS=true`). Si quedara un UKI de un kernel más nuevo (cuyos módulos ya no existen en el root restaurado), el sistema fallaría al arrancar — exactamente el problema de "unknown filesystem type" tras una actualización.
+- El **restore hook** (v3.3) hace **sync inverso**: además de copiar los UKIs del snapshot, **elimina de la partición de arranque cualquier `.efi` que no esté en el snapshot** (`PRUNE_UKIS=true`). Si quedara un UKI de un kernel más nuevo (cuyos módulos ya no existen en el root restaurado), el sistema fallaría al arrancar — exactamente el problema de "unknown filesystem type" tras una actualización.
 
 Para desactivar la limpieza:
 - Restore: edita `/etc/timeshift/restore-hooks.d/90-restore-uki` y pon `PRUNE_UKIS=false`.
@@ -274,6 +275,22 @@ sudo kernel-install --boot-path=/boot --esp-path=/efi add \
 - ✅ **Secure Boot**: No modifica firmas; solo preserva los binarios ya firmados.
 - ✅ **Detección de ESP**: Verifica PARTTYPE para no confundir con USBs.
 
+### Verificación de integridad (checksums)
+
+El backup hook escribe junto a cada UKI un archivo de checksum con el nombre **completo del UKI** más el sufijo `.sha256` (p. ej. `arch-linux.efi.sha256`, `c2224fef-...-7.1.8-arch1-3.efi.sha256`). Contiene únicamente el hash SHA-256 en hex (sin nombres de archivo):
+
+```bash
+sha256sum /boot/EFI/Linux/c2224fef-*-7.1.8-arch1-3.efi | awk '{print $1}'
+# se guarda en /etc/timeshift/uki-backup/<mismo-nombre>.efi.sha256
+```
+
+El restore hook, antes de copiar, calcula el SHA-256 de cada UKI respaldado y lo compara con su `.sha256`:
+- Si **coincide** → restaura (o salta si el destino ya es idéntico, evitando escrituras innecesarias a la ESP).
+- Si **no coincide** → aborta con `ERROR: Checksum falló` (posible corrupción del respaldo).
+- Si **falta** el `.sha256` → avisa con `WARN` y continúa sin verificación (no bloquea la restauración).
+
+Los `.sha256` huérfanos (sin su UKI asociado) se limpian automáticamente en cada ejecución del hook.
+
 ---
 
 ## 🔧 Depuración e Integración de Logs
@@ -300,6 +317,7 @@ Para el historial completo de cambios, ver [CHANGELOG.md](CHANGELOG.md).
 
 ### v3.3 (Última versión)
 - **`PRUNE_OLD_UKIS` (backup hook)**: cada snapshot viaja **solo con el UKI del sistema actual** (`uname -r`). Con layout `kernel-install` se eliminan del respaldo los `.efi` obsoletos (versiones anteriores y el preset clásico `arch-linux.efi` legacy), evitando que UKIs de kernels viejos se acumulen en las snapshots y sean devueltos a la partición de arranque al restaurar. Configurable con `PRUNE_OLD_UKIS`.
+- **Fix en el restore hook**: la ruta del checksum apuntaba a `"<UKI>".sha256` en lugar de `"<UKI>.efi.sha256"`, por lo que la verificación de integridad y el "salto si idéntico" nunca se ejecutaban. Corregido.
 
 ### v3.2
 - **Soporte completo de `kernel-install`**: pruning de UKIs obsoletos en el restore hook (sync ESP ↔ snapshot), esencial con UKIs versionados (`<machine-id>-<kver>.efi`). Configurable con `PRUNE_UKIS`.

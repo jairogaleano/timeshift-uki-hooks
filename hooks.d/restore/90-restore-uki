@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Restore Script (v3.2)
+# Timeshift UKI Hooks - Restore Script (v3.3)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -216,7 +216,9 @@ for uki_backup in "${backup_ukis[@]}"; do
         continue
     fi
 
-    sha_file="${uki_backup%.efi}.sha256"
+    # El backup hook escribe el checksum como "<UKI>.efi.sha256" (p. ej.
+    # arch-linux.efi.sha256), asi que el nombre del UKI se conserva intacto.
+    sha_file="$uki_backup.sha256"
     expected_sha=""
 
     if [ -f "$sha_file" ]; then
