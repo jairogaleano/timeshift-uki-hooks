@@ -9,7 +9,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 if [ "$EUID" -ne 0 ]; then
-  echo "Por favor, ejecuta como root (sudo ./install.sh)"
+  echo "Por favor, ejecuta como root (pkexec ./install.sh o sudo ./install.sh)"
   exit 1
 fi
 
@@ -83,8 +83,13 @@ done
 if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
   echo "Faltan las siguientes dependencias: ${MISSING_DEPS[*]}"
   echo "Paquetes necesarios: ${MISSING_PKGS[*]}"
-  read -rp "¿Deseas instalarlos ahora? [S/n] " answer
-  answer="${answer:-S}"
+  # Non-interactive: instalar automaticamente si no hay terminal (pkexec, cron, etc.)
+  if [ -t 0 ] && [ -t 1 ]; then
+    read -rp "¿Deseas instalarlos ahora? [S/n] " answer
+    answer="${answer:-S}"
+  else
+    answer="S"
+  fi
   if [[ "$answer" =~ ^[Ss]$ ]]; then
     echo "Instalando paquetes..."
     install_packages "${MISSING_PKGS[@]}"
