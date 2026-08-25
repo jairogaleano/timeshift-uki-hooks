@@ -4,6 +4,21 @@ Todas las versiones significativas de este proyecto. Formato basado en [Keep a C
 
 ---
 
+## [3.4] - 2026-08-25
+
+### Added
+- **`trap cleanup EXIT`** en el restore hook: si el script aborta a mitad (checksum falla, cp falla, signal), el trap restaura el modo RO de la ESP y la desmonta si fue montada manualmente. Antes, un aborto deixaba la ESP montada RW o colgada.
+- **`skip_prune`** en `copy_ukis()`: la segunda llamada (snapshot) omite la purge de obsoletos ya que el destino fue purgeado en la primera llamada (sistema vivo). Evita I/O innecesario.
+
+### Fixed
+- Restore hook: eliminados bloques manuales de cleanup (`mount -o remount,ro`) en cada ruta de error — el trap EXIT los maneja de forma centralizada y segura.
+
+### Changed
+- `ARCHITECTURE.md` sincronizado con el codigo real: eliminadas descripciones de busqueda de ESP por PARTTYPE GUID en el restore hook (no existe en el codigo; solo el backup hook la tiene). Corregido diagrama de flujo.
+- Version bump a v3.4.
+
+---
+
 ## [3.3] - 2026-08-13
 
 ### Added

@@ -315,7 +315,12 @@ Este proyecto se integra directamente con el sistema de registros de **Timeshift
 
 Para el historial completo de cambios, ver [CHANGELOG.md](CHANGELOG.md).
 
-### v3.3 (Última versión)
+### v3.4 (Última versión)
+- **`trap cleanup EXIT`** en el restore hook: si el script aborta a mitad (checksum falla, cp falla, signal), el trap restaura el modo RO de la ESP y la desmonta si fue montada manualmente. Evita que la ESP quede montada RW o colgada.
+- **`skip_prune`** en `copy_ukis()`: la segunda llamada (snapshot) omite la purge de obsoletos, evitando I/O innecesario.
+- **ARCHITECTURE.md sincronizado** con el código real.
+
+### v3.3
 - **`PRUNE_OLD_UKIS` (backup hook)**: cada snapshot viaja **solo con el UKI del sistema actual** (`uname -r`). Con layout `kernel-install` se eliminan del respaldo los `.efi` obsoletos (versiones anteriores y el preset clásico `arch-linux.efi` legacy), evitando que UKIs de kernels viejos se acumulen en las snapshots y sean devueltos a la partición de arranque al restaurar. Configurable con `PRUNE_OLD_UKIS`.
 - **Fix en el restore hook**: la ruta del checksum apuntaba a `"<UKI>".sha256` en lugar de `"<UKI>.efi.sha256"`, por lo que la verificación de integridad y el "salto si idéntico" nunca se ejecutaban. Corregido.
 

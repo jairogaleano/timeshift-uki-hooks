@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Restore Script (v3.3)
+# Timeshift UKI Hooks - Restore Script (v3.4)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -62,6 +62,25 @@ log "INFO" "Iniciando restauracion de UKIs"
 WAS_RO=false
 TARGET_MNT=""
 IN_CHROOT=false
+ESP_MOUNTED_BY_US=false
+RESTORE_STARTED=false
+
+# Cleanup seguro al salir (exit, error, o signal). Previene que la ESP quede
+# montada RW o que un mount manual quede colgado si el script aborta a mitad.
+cleanup() {
+    if [ "$RESTORE_STARTED" != "true" ]; then
+        return 0
+    fi
+    if [ "$WAS_RO" = true ] && [ -n "$TARGET_MNT" ]; then
+        log "INFO" "[cleanup] Restaurando $TARGET_MNT a modo SOLO LECTURA..."
+        mount -o remount,ro "$TARGET_MNT" 2>/dev/null || true
+    fi
+    if [ "$ESP_MOUNTED_BY_US" = true ] && [ -n "$TARGET_MNT" ]; then
+        log "INFO" "[cleanup] Desmontando $TARGET_MNT (montado por este script)..."
+        umount "$TARGET_MNT" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
 
 # Deteccion de chroot (compatible con systemd, OpenRC, runit, etc.)
 detect_chroot() {
@@ -134,6 +153,7 @@ if [ -z "$TARGET_MNT" ]; then
 fi
 
 log "INFO" "ESP montada en: $TARGET_MNT"
+RESTORE_STARTED=true
 
 # Comprobar si esta montado en modo solo lectura (ro)
 if findmnt -O ro "$TARGET_MNT" >/dev/null 2>&1; then
@@ -155,9 +175,6 @@ fi
 # 4. Verificar si existe el directorio de respaldo
 if [ ! -d "$BACKUP_DIR" ]; then
     log "ERROR" "No se encontro el directorio de respaldo $BACKUP_DIR"
-    if [ "$WAS_RO" = true ]; then
-        mount -o remount,ro "$TARGET_MNT"
-    fi
     exit 1
 fi
 
@@ -167,9 +184,6 @@ shopt -u nullglob
 
 if [ ${#backup_ukis[@]} -eq 0 ]; then
     log "ERROR" "No se encontraron archivos UKI (.efi) de respaldo en $BACKUP_DIR"
-    if [ "$WAS_RO" = true ]; then
-        mount -o remount,ro "$TARGET_MNT"
-    fi
     exit 1
 fi
 
@@ -227,9 +241,6 @@ for uki_backup in "${backup_ukis[@]}"; do
 
         if [ "$expected_sha" != "$actual_sha" ]; then
             log "ERROR" "Checksum fallo para $basename. Esperado: $expected_sha, Actual: $actual_sha"
-            if [ "$WAS_RO" = true ]; then
-                mount -o remount,ro "$TARGET_MNT"
-            fi
             exit 1
         fi
         log "INFO" "Checksum verificado para $basename"
@@ -255,17 +266,11 @@ for uki_backup in "${backup_ukis[@]}"; do
         else
             log "ERROR" "No se pudo completar la copia atomica de $basename"
             rm -f "$temp_file"
-            if [ "$WAS_RO" = true ]; then
-                mount -o remount,ro "$TARGET_MNT"
-            fi
             exit 1
         fi
     else
         log "ERROR" "No se pudo copiar $basename"
         rm -f "$temp_file"
-        if [ "$WAS_RO" = true ]; then
-            mount -o remount,ro "$TARGET_MNT"
-        fi
         exit 1
     fi
 done
@@ -317,13 +322,8 @@ else
     log "INFO" "Pruning desactivado (PRUNE_UKIS=false). Se conservan UKIs no respaldados."
 fi
 
-# 8. Devolver la particion a modo SOLO LECTURA si originalmente estaba asi
-if [ "$WAS_RO" = true ] && [ -n "$TARGET_MNT" ]; then
-    log "INFO" "Restaurando $TARGET_MNT a modo SOLO LECTURA..."
-    mount -o remount,ro "$TARGET_MNT"
-fi
-
-# 9. Reportar resultado final
+# 8. Reportar resultado final
+# (la limpieza de ESP/RO la maneja el trap EXIT)
 if [ "$restored_count" -gt 0 ] || [ "$pruned_count" -gt 0 ]; then
     log "INFO" "EXITO: $restored_count UKIs restaurados, $pruned_count obsoletos eliminados"
 else

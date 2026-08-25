@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Backup Script (v3.3)
+# Timeshift UKI Hooks - Backup Script (v3.4)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -149,8 +149,11 @@ prune_stale_ukis() {
 
 # Copia los UKIs actuales de la ESP a un directorio destino.
 # Selectivo: solo copia los que cambiaron (comparacion SHA256 per-file).
+# $2 = "skip_prune": omitir purge de obsoletos (para la segunda llamada al snapshot,
+#   cuyo destino ya fue purgeado en la primera).
 copy_ukis() {
     local dest="$1"
+    local skip_prune="${2:-}"
     local count=0
 
     if [ ! -d "$dest" ]; then
@@ -177,7 +180,8 @@ copy_ukis() {
     done
 
     # Purgar UKIs obsoletos que ya no corresponden al kernel actual
-    if [ "$PRUNE_OLD_UKIS" = true ]; then
+    # (omitir en la segunda llamada al snapshot, cuyo destino ya fue purgeado)
+    if [ "$PRUNE_OLD_UKIS" = true ] && [ "$skip_prune" != "skip_prune" ]; then
         prune_stale_ukis "$dest"
     fi
 
@@ -299,7 +303,7 @@ fi
 
 if [ -n "$SNAPSHOT_BACKUP_DIR" ]; then
     log "INFO" "Escribiendo UKIs dentro del snapshot (TS_SNAPSHOT_PATH): $SNAPSHOT_BACKUP_DIR"
-    if ! copy_ukis "$SNAPSHOT_BACKUP_DIR"; then
+    if ! copy_ukis "$SNAPSHOT_BACKUP_DIR" "skip_prune"; then
         log "ERROR" "Fallo al escribir los UKIs dentro del snapshot"
         exit 1
     fi
