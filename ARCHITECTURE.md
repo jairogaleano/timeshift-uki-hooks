@@ -4,6 +4,14 @@
 
 Son dos hooks que integran UKIs (Unified Kernel Images) con el sistema de snapshots Btrfs de Timeshift. Resuelven un problema de desajuste: Timeshift protege `/` pero la particion **ESP** (donde estan los UKIs `.efi`) queda fuera de los snapshots.
 
+### Portabilidad y estado de su verificacion
+
+Ninguno de los dos hooks referencia una distro: no invocan al gestor de paquetes ni al init system, y se apoyan solo en bash + `util-linux` (`findmnt`, `lsblk`, `mountpoint`) + `coreutils` (`sha256sum`, `stat`, `df`). Los ejecutan las rutas de hooks del propio Timeshift upstream (`/etc/timeshift/*-hooks.d/`) con `run-parts`, y comprueban la instalacion de un kernel en `/usr/lib/modules/<kver>`, ruta comun a Arch, Fedora, Debian 12+, openSUSE y Void.
+
+Lo que si es especifico de cada distro queda fuera de los hooks: la deteccion del gestor de paquetes en `install.sh`, el empaquetado (solo AUR) y **quien dispara los hooks**: el unico automatismo documentado, `00-timeshift-autosnap.hook`, es un hook de pacman.
+
+**Estado de verificacion**: unicamente Arch Linux se ha probado en hardware real, en un ciclo completo (snapshot, UKIs dentro del snapshot, restauracion, arranque). La CI corre en `ubuntu-latest` y ejercita los hooks en un *chroot* simulado, lo que valida la logica pero **no** constituye verificacion en hardware. El acoplamiento real es ademas con el **gestor de arranque** (UKIs en `EFI/Linux` sobre vfat, o sea systemd-boot), no con una distribucion. El detalle de que habria que comprobar en cada distro esta en el README, seccion "Plataformas Soportadas".
+
 ---
 
 ## Backup Hook (`90-backup-uki`)

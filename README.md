@@ -60,15 +60,30 @@ Este proyecto sincroniza los UKIs con los snapshots de Btrfs mediante hooks:
 
 | Distribución | Estado | Notas |
 |-------------|--------|-------|
-| Arch Linux / Manjaro / EndeavourOS | ✅ Probado | Incluye paquete AUR (`timeshift-uki-hooks-git`) |
-| Debian / Ubuntu / Linux Mint / Pop!_OS | ⚠️ Sin probar | `install.sh` detecta apt e instala dependencias; el resto del proyecto es shell estándar |
-| Fedora | ⚠️ Sin probar | Ídem con dnf |
-| openSUSE | ⚠️ Sin probar | Ídem con zypper |
-| Void Linux | ⚠️ Sin probar | Ídem con xbps |
-| Alpine Linux | ⚠️ Sin probar | Ídem con apk (requiere bash) |
-| Gentoo y otros con systemd | ⚠️ Sin probar | Herramientas estándar GNU (`util-linux`, `coreutils`) |
+| Arch Linux / Manjaro / EndeavourOS | ✅ Verificado en hardware real | Incluye paquete AUR (`timeshift-uki-hooks-git`) |
+| Debian / Ubuntu / Linux Mint / Pop!_OS | ⚠️ Sin verificar | `install.sh` detecta apt e instala dependencias; el resto del proyecto es shell estándar |
+| Fedora | ⚠️ Sin verificar | Ídem con dnf |
+| openSUSE | ⚠️ Sin verificar | Ídem con zypper |
+| Void Linux | ⚠️ Sin verificar | Ídem con xbps |
+| Alpine Linux | ⚠️ Sin verificar | Ídem con apk (requiere bash) |
+| Gentoo y otros con systemd | ⚠️ Sin verificar | Herramientas estándar GNU (`util-linux`, `coreutils`) |
 
-**Qué es realmente portable**: los hooks solo usan bash + `util-linux` (`findmnt`, `lsblk`, `mountpoint`) + `coreutils` (`sha256sum`, `stat`, `df`). Lo que **no** se ha probado en otras distribuciones es la integración real (Timeshift en modo Btrfs, `kernel-install`, Secure Boot), que es la parte específica de cada sistema. La CI cubre la lógica de ambos hooks (el backup contra un árbol temporal, el restore con namespaces + chroot), pero nunca una ESP real de verdad.
+**Qué es realmente portable**: los hooks solo usan bash + `util-linux` (`findmnt`, `lsblk`, `mountpoint`) + `coreutils` (`sha256sum`, `stat`, `df`). Lo específico de cada distribución se reduce a `install.sh` (que detecta el gestor de paquetes) y al empaquetado: **el núcleo —los dos hooks— no toca ningún gestor de paquetes ni ningún init system**, porque los ejecuta Timeshift vía `run-parts`. La CI cubre la lógica de ambos hooks (el backup contra un árbol temporal, el restore con namespaces + chroot), pero nunca una ESP real de verdad. Y lo que no se ha verificado en otras distribuciones es la integración completa, que es la parte específica de cada sistema (ver la limitación siguiente).
+
+### Limitación conocida: el soporte multi-distribución no está verificado en hardware real
+
+> ⚠️ **Esta es una limitación abierta, no un problema conocido con solución.** Que `install.sh` sepa manejar seis gestores de paquetes **no demuestra** que los hooks funcionen en esas distribuciones. **Solo Arch Linux se ha probado en una máquina real, de principio a fin**: snapshot → UKIs dentro del snapshot → restauración → arranque correcto. En el resto no se ha ejecutado ni un ciclo completo de backup/restore.
+
+Para levantar esta limitación, una distribución debe cumplir **las cuatro** condiciones:
+
+1. **Que el sistema arranque después de restaurar**, no solo que el script termine sin error. Un restore correcto en el log puede dejar en la ESP un UKI que no arranca; es el fallo que no se vería en una prueba de scripts.
+2. **Que algo dispare los hooks.** El único automatismo documentado es `00-timeshift-autosnap.hook`, un hook de **pacman** ([Integración con pacman](#integración-con-pacman-timeshift-autosnap)). Fuera de Arch no hay equivalente documentado, así que los hooks quedan instalados pero **nadie los invoca**. Un `timeshift --create` manual sí los ejecuta; lo que falta es el disparo automático previo a una actualización de paquetes.
+3. **`kernel-install` con layout `EFI/Linux`.** La lógica de purga asume UKIs con nombre `<machine-id>-<kver>.efi`; ese es el layout de `kernel-install` en todas las distribuciones, pero casi solo Arch lo usa por defecto.
+4. **Secure Boot con las claves de esa máquina**: firmar el UKI restaurado contra las claves de `db` (shim + MOK en Debian/Fedora, `sbctl` en Arch).
+
+Lo que **sí** es independiente de la distribución, y por eso no es descartable que funcione tal cual: las rutas `/etc/timeshift/*-hooks.d/` son las del propio Timeshift upstream, y `/usr/lib/modules/<kver>` es igual en Arch, Fedora, Debian 12+, openSUSE y Void.
+
+> El acoplamiento real del proyecto no es a una distribución, sino al **gestor de arranque**: presupone UKIs en `EFI/Linux` sobre vfat, es decir **systemd-boot**. Con GRUB no hay UKIs que respaldar en ninguna distribución.
 
 **Init systems:** los hooks no dependen del init system (los ejecuta Timeshift vía `run-parts`); el restore hook está pensado para funcionar también desde un chroot en un Live USB.
 
@@ -182,6 +197,8 @@ sudo timeshift --restore
 ```
 
 Los UKIs se devuelven a la ESP y el sistema queda consistente y arrancable.
+
+> ⚠️ Este automatismo es **específico de Arch**: `00-timeshift-autosnap.hook` es un hook de pacman y no tiene equivalente documentado en otras distribuciones. Fuera de Arch los hooks sí se ejecutan con `timeshift --create` y `timeshift --restore` manuales, pero nada los dispara antes de actualizar el sistema. Ver [la limitación conocida](#limitación-conocida-el-soporte-multi-distribución-no-está-verificado-en-hardware-real).
 
 ### Comandos útiles
 
@@ -421,6 +438,8 @@ Cada `push` a `main` ejecuta [`.github/workflows/ci.yml`](.github/workflows/ci.y
 **`tests/boot-partition.sh`** cubre el restore hook, que hasta v3.5 no tenía ninguna cobertura. La clave es que **no necesita una ESP real ni privilegios**: se re-ejecuta dentro de un namespace de usuario (`unshare -r -m -p -f`) y levanta un chroot mínimo con *bind mounts* de `/usr`, `/dev`, `/sys` y `/proc`. Dentro, `/boot` y `/efi` se pueden montar o dejar como directorios planos, así que se ejercita el código de producción tal cual, sin variables de entorno ni *seams* que solo usen los tests. Cubre 9 casos: los cuatro *layouts* de partición con UKIs en `/boot` y/o `/efi`, los dos escenarios de dual-boot con la partición de los UKIs **sin montar** (justo los que fallaban antes del fix), el caso "ninguna sirve" y tres de verificación de checksum.
 
 Si las *user namespaces* estuvieran deshabilitadas, el test **falla** en lugar de saltarse en silencio: un test que se salta solo no es cobertura.
+
+> ⚠️ **La CI corre en `ubuntu-latest` y eso no verifica ninguna distro.** Es el único entorno donde el proyecto se ejecuta de forma automatizada, y no es el de producción: los hooks corren dentro de un *chroot* simulado, sobre un árbol de ficheros, nunca contra una ESP de verdad ni contra un arranque real. La CI no cuenta como verificación en hardware (ver [la limitación conocida](#limitación-conocida-el-soporte-multi-distribución-no-está-verificado-en-hardware-real)); de hecho, los dos fallos que corrigió el `chroot` de `boot-partition.sh` eran **típicos de Ubuntu** (`/lib64` como directorio real en vez de symlink, y `awk` desapareciendo al no existir `/etc/alternatives`).
 
 ---
 
