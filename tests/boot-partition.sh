@@ -71,18 +71,33 @@ fail() {
 }
 
 # --- chroot minimo ---------------------------------------------------------
+# Se replica el layout de la raiz real en vez de asumir el de una distro
+# concreta: en Arch /lib64 es un symlink a usr/lib, en Ubuntu es un directorio
+# (o symlink a usr/lib64). Assume-rlo dejaba el chroot sin el loader de ELF y
+# todo fallaba con rc=127.
+link_or_bind() {
+    local src="$1" dst="$R$1"
+    mkdir -p "$(dirname "$dst")"
+    if [ -L "$src" ]; then
+        ln -s "$(readlink "$src")" "$dst"
+    elif [ -d "$src" ]; then
+        mkdir -p "$dst"
+        mount --rbind "$src" "$dst"
+    else
+        mkdir -p "$dst"
+    fi
+}
+
 build_chroot() {
-    mkdir -p "$R"/usr "$R"/dev "$R"/sys "$R"/boot "$R"/efi \
-             "$R"/etc "$R"/proc "$R"/tmp "$R"/backup \
-             "$R"/hooks.d/restore
-    ln -s usr/bin "$R/bin"
-    ln -s usr/lib "$R/lib"
-    ln -s usr/lib "$R/lib64"
-    ln -s usr/sbin "$R/sbin"
+    mkdir -p "$R"/usr "$R"/dev "$R"/sys "$R"/etc "$R"/proc "$R"/tmp "$R"/backup "$R"/hooks.d/restore
     mount --rbind /usr  "$R/usr"
     mount --rbind /dev  "$R/dev"
     mount --rbind /sys  "$R/sys"
     mount --rbind /proc "$R/proc"
+    for d in /bin /sbin /lib /lib64 /lib32; do
+        [ -e "$d" ] || [ -L "$d" ] || continue
+        link_or_bind "$d"
+    done
     cp /etc/machine-id "$R/etc/machine-id"
     cp /etc/nsswitch.conf "$R/etc/" 2>/dev/null || true
     # fstab vacio: el hook no debe poder montar nada por su cuenta. Asi el
@@ -90,6 +105,9 @@ build_chroot() {
     : > "$R/etc/fstab"
     cp "$RESTORE_HOOK" "$R/hooks.d/restore/90-restore-uki"
     chmod +x "$R/hooks.d/restore/90-restore-uki"
+    # Fallo temprano y legible si el chroot no esta bien montado.
+    chroot "$R" /bin/bash -c 'command -v sha256sum findmnt mountpoint df' >/dev/null \
+        || { echo "FALLO: el chroot no tiene las utilidades basicas." >&2; exit 1; }
 }
 
 # --- Escenarios ------------------------------------------------------------
