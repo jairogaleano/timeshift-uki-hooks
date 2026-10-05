@@ -110,5 +110,12 @@ assert_file "$SNAP_RSYNC/etc/timeshift/uki-backup/${CUR_EFI}"
 
 bash -n "$RESTORE_HOOK"
 
+# --- Resolucion de la particion de arranque (namespace + bind mounts) ------
+# Vive en su propio fichero porque necesita un namespace de usuario con
+# montajes privados sobre /boot y /efi. Ver tests/boot-partition.sh.
 echo ""
-echo "OK: smoke test del backup hook correcto (log: $LOG)"
+echo "--- resolucion de la particion de arranque ---"
+"$SCRIPT_DIR/boot-partition.sh"
+
+echo ""
+echo "OK: smoke test correcto (backup hook + particion de arranque)"

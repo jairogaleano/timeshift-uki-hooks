@@ -1,4 +1,4 @@
-# Timeshift UKI Hooks v3.5
+# Timeshift UKI Hooks v3.6
 
 Sistema de hooks para **Timeshift** que respalda y restaura imágenes **UKI (Unified Kernel Images)** en sistemas con **Btrfs + Secure Boot**.
 
@@ -68,7 +68,7 @@ Este proyecto sincroniza los UKIs con los snapshots de Btrfs mediante hooks:
 | Alpine Linux | ⚠️ Sin probar | Ídem con apk (requiere bash) |
 | Gentoo y otros con systemd | ⚠️ Sin probar | Herramientas estándar GNU (`util-linux`, `coreutils`) |
 
-**Qué es realmente portable**: los hooks solo usan bash + `util-linux` (`findmnt`, `lsblk`, `mountpoint`) + `coreutils` (`sha256sum`, `stat`, `df`). Lo que **no** se ha probado en otras distribuciones es la integración real (Timeshift en modo Btrfs, `kernel-install`, Secure Boot), que es la parte específica de cada sistema. La CI solo cubre la lógica del backup hook, y no la ESP real.
+**Qué es realmente portable**: los hooks solo usan bash + `util-linux` (`findmnt`, `lsblk`, `mountpoint`) + `coreutils` (`sha256sum`, `stat`, `df`). Lo que **no** se ha probado en otras distribuciones es la integración real (Timeshift en modo Btrfs, `kernel-install`, Secure Boot), que es la parte específica de cada sistema. La CI cubre la lógica de ambos hooks (el backup contra un árbol temporal, el restore con namespaces + chroot), pero nunca una ESP real de verdad.
 
 **Init systems:** los hooks no dependen del init system (los ejecuta Timeshift vía `run-parts`); el restore hook está pensado para funcionar también desde un chroot en un Live USB.
 
@@ -315,44 +315,44 @@ Variables de entorno (para pruebas; no hace falta tocarlas en producción):
 
 ## 📍 Detección de la partición de arranque
 
-Ambos hooks tienen que decidir en qué partición están los UKIs. **No hay variable de configuración para eso**: se detecta sola, y conviene entender cómo, porque no es la misma regla en los dos hooks.
+Ambos hooks tienen que decidir en qué partición están los UKIs. **No hay variable de configuración para eso**: se detecta sola, y conviene entender cómo, porque es la misma regla en los dos hooks desde v3.6.
+
+Una partición es **candidata** si está **montada** y tiene el directorio `EFI/Linux`. La presencia de ese directorio es la evidencia: es donde `kernel-install` deja los UKIs, así que existe en la partición correcta y no en la otra.
 
 | | Backup hook | Restore hook |
 |---|---|---|
-| Criterio | primer `<mnt>/EFI/Linux` **que exista** | primer `<mnt>` de `/boot`, `/efi`, `/boot/efi` que sea **mountpoint** |
-| Comprueba el tipo de partición (ESP/XBOOTLDR) | solo en el fallback | solo en el fallback |
-| Crea el directorio si falta | no | **sí** (`mkdir -p`) |
+| Rutas estándar (`/boot`, `/efi`, `/boot/efi`) | primera montada con `EFI/Linux` | primera montada con `EFI/Linux` |
+| Otras vfat montadas | `EFI/Linux` + PARTTYPE ESP/XBOOTLDR | `EFI/Linux` + PARTTYPE ESP/XBOOTLDR |
+| Crea el directorio si falta | no | no |
 
-### ⚠️ Limitación conocida: el restore hook no valida la partición que elige
+El **PARTTYPE** (ESP `c12a7328` o XBOOTLDR `bc13c2ff`) solo se exige cuando hay que buscar **fuera** de las rutas estándar, que es donde cabe confundirse con un USB. En las rutas estándar basta con `EFI/Linux`.
 
-El restore hook acepta como válido el **primer punto de montaje** que encuentre, sin comprobar que contenga `EFI/Linux` ni que la partición sea una ESP o XBOOTLDR. En una máquina con **una sola** partición de arranque esto es inofensivo. El problema aparece cuando hay **dos vfat montadas y solo una tiene los UKIs** —el layout habitual en dual-boot:
+Si **ninguna** partición candidata, los hooks lo dicen y **no escriben nada**. En el restore significa que la restauración no se lleva a cabo; **no** significa que los UKIs acaben en una partición cualquiera.
+
+### Por qué no se acepta «el primer mountpoint que aparezca»
+
+Hasta v3.5 el restore hook aceptaba el primer punto de montaje de `/boot`, `/efi`, `/boot/efi` **sin comprobar nada**, y creaba el destino con `mkdir -p`. En una máquina con **una sola** partición de arranque eso es inofensivo, pero en el layout habitual de dual-boot era un bug:
 
 ```
-p1  ESP     c12a7328  → /efi    ← Windows (o el bootloader)
+p1  ESP     c12a7328  → /efi    ← Windows (o el bootloader), SIN UKIs
 p5  XBOOTLDR bc13c2ff → /boot   ← los UKIs de Linux aquí
 ```
 
-Si `/boot` **no** está montado en el momento de restaurar, el hook cae en `/efi`, que sí es una ESP válida, **crea `/efi/EFI/Linux` con `mkdir -p`** y escribe ahí los UKIs. Los UKIs reales de `/boot` no se restauran, y con `PRUNE_UKIS=true` además borra de esa partición los `.efi` que no estén en el respaldo.
+Si `/boot` **no** estaba montado, el hook caía en `/efi`, creaba `/efi/EFI/Linux` y escribía ahí los UKIs. Los UKIs reales de `/boot` no se restauraban y, con `PRUNE_UKIS=true`, además se borraba de esa partición los `.efi` que no estuvieran en el respaldo. El error se **persistía**, porque el `mkdir -p` dejaba el directorio ya creado para la siguiente ejecución.
 
-Esto **no** rompe el arranque de Windows (usa `EFI/Microsoft/Boot`), pero deja los UKIs de Linux en la partición equivocada y el sistema puede no arrancar tras restaurar, por mismatch kernel/módulos.
+> **El caso más probable era el chroot de un Live USB** (el "peor caso" que describe [ARCHITECTURE.md](ARCHITECTURE.md)): ahí es fácil montar `/efi` por costumbre y olvidar `/boot`.
 
-> **El caso más probable es el chroot de un Live USB** (el "peor caso" que describe [ARCHITECTURE.md](ARCHITECTURE.md)): ahí es fácil montar `/efi` por costumbre y olvidar `/boot`.
-
-**Cómo evitarlo:**
+**Cómo comprobar tu máquina:**
 
 ```bash
-# 1. Comprobar de antemano qué partición contiene los UKIs
+# La partición de los UKIs es la única vfat con un EFI/Linux con contenido
 findmnt -t vfat -o TARGET,SOURCE
 sudo ls -d /boot/EFI/Linux /efi/EFI/Linux 2>&1   # solo debe existir el correcto
-
-# 2. En el chroot, montar SIEMPRE la partición de los UKIs antes de restaurar
-mount /dev/nvme0n1p5 /mnt/arch/boot      # la que tenga EFI/Linux
-mount /dev/nvme0n1p1 /mnt/arch/efi       # la otra, si hace falta
-
-# 3. Montarla en el sitio correcto ANTES de lanzar timeshift restore
 ```
 
-**Cómo saber cuál es la correcta en tu máquina:** es la única partición vfat que contenga un directorio `EFI/Linux` con UKIs dentro. Los UKIs en uso son los que tienen el nombre `<machine-id>-<uname -r>.efi` (compruébalo con `uname -r`).
+Los UKIs en uso son los que tienen el nombre `<machine-id>-<uname -r>.efi` (compruébalo con `uname -r`).
+
+Si el hook aborta con `No se encontro la particion de arranque`, casi siempre es que la partición de los UKIs no está montada: móntala y vuelve a lanzar el restore. Si está realmente vacía, crea el directorio a mano (`mkdir -p <mnt>/EFI/Linux`); el hook no lo hace por ti precisamente para no dejar UKIs donde no había ninguno.
 
 ---
 
@@ -407,18 +407,20 @@ Este proyecto se integra directamente con el sistema de registros de **Timeshift
 
 Cada `push` a `main` ejecuta [`.github/workflows/ci.yml`](.github/workflows/ci.yml), que comprueba:
 
-1. **Sintaxis**: `bash -n` sobre `install.sh`, ambos hooks y el test.
+1. **Sintaxis**: `bash -n` sobre `install.sh`, ambos hooks y los dos tests.
 2. **ShellCheck** en nivel `warning` (sin excepciones: el nivel está limpio).
 3. **Coherencia de versión**: `VERSION` es la única fuente de verdad y la CI falla si `README.md`, `CHANGELOG.md`, ambos hooks o `install.sh` no la declaran igual. Antes la versión se escribía a mano en cada fichero y ya había derivado (el título del README se quedó en v3.2 mientras el código iba por v3.4).
-4. **Smoke test** del backup hook ([`tests/smoke.sh`](tests/smoke.sh)).
-
-El smoke test ejecuta el hook de verdad contra un árbol temporal (`mktemp -d`) usando las variables `TSUKI_*`, sin tocar el sistema. Comprueba la purga de la ESP, el respaldo selectivo con su `.sha256`, los dos layouts de snapshot (Btrfs y rsync) y la idempotencia de una segunda ejecución.
+4. **Tests**: [`tests/smoke.sh`](tests/smoke.sh) (backup hook) + [`tests/boot-partition.sh`](tests/boot-partition.sh) (restore hook), que es el que invoca al primero.
 
 ```bash
-./tests/smoke.sh
+./tests/smoke.sh          # ejecuta los dos
 ```
 
-El **restore hook** no tiene cobertura automática: su lógica exige una ESP real montada (`findmnt`, `df`, `mount`, remontado RW/RO) y probarlo en CI requeriría montar vfat con privilegios. En la CI solo se valida con `bash -n` y ShellCheck.
+**`tests/smoke.sh`** ejecuta el backup hook de verdad contra un árbol temporal (`mktemp -d`) usando las variables `TSUKI_*`, sin tocar el sistema. Comprueba la purga de la ESP, el respaldo selectivo con su `.sha256`, los dos layouts de snapshot (Btrfs y rsync) y la idempotencia de una segunda ejecución.
+
+**`tests/boot-partition.sh`** cubre el restore hook, que hasta v3.5 no tenía ninguna cobertura. La clave es que **no necesita una ESP real ni privilegios**: se re-ejecuta dentro de un namespace de usuario (`unshare -r -m -p -f`) y levanta un chroot mínimo con *bind mounts* de `/usr`, `/dev`, `/sys` y `/proc`. Dentro, `/boot` y `/efi` se pueden montar o dejar como directorios planos, así que se ejercita el código de producción tal cual, sin variables de entorno ni *seams* que solo usen los tests. Cubre 9 casos: los cuatro *layouts* de partición con UKIs en `/boot` y/o `/efi`, los dos escenarios de dual-boot con la partición de los UKIs **sin montar** (justo los que fallaban antes del fix), el caso "ninguna sirve" y tres de verificación de checksum.
+
+Si las *user namespaces* estuvieran deshabilitadas, el test **falla** en lugar de saltarse en silencio: un test que se salta solo no es cobertura.
 
 ---
 
@@ -426,7 +428,14 @@ El **restore hook** no tiene cobertura automática: su lógica exige una ESP rea
 
 Para el historial completo de cambios, ver [CHANGELOG.md](CHANGELOG.md).
 
-### v3.5 (Última versión)
+### v3.6 (Última versión)
+- **El restore hook elegía la partición de arranque equivocada** (bug, no solo fragilidad). Aceptaba el **primer mountpoint** de `/boot`, `/efi`, `/boot/efi` sin comprobar nada y creaba el destino con `mkdir -p`. Con dos vfat montadas y solo una con UKIs (dual-boot), si la partición correcta no estaba montada, escribía los UKIs en la otra y —con `PRUNE_UKIS=true`— además borraba de ella los `.efi` que no estuvieran en el respaldo. El `mkdir -p` hacía que el error quedara "confirmado". Ahora una partición solo es candidata si está montada y tiene `EFI/Linux`, y si no hay ninguna el hook **aborta con un error claro** en vez de adivinar. Era justo lo que documentamos como limitación en v3.5.
+- **Los dos hooks ya no pueden apuntar a particiones distintas**: ambos aplican la misma regla (`is_boot_partition_dir`).
+- **Un `.sha256` con formato `sha256sum` abortaba la restauración**: se comparaba el fichero entero contra el hash pelado, así que un `.sha256` con formato `<hash>  <nombre>` fallaba siempre aunque el hash fuese correcto. Ahora se aceptan ambos formatos.
+- **El fallback que monta particiones ya no acepta la primera que se monte bien**: se reintenta la resolución y solo se usa lo que la validación acepte.
+- **El restore hook por fin tiene cobertura automática** ([`tests/boot-partition.sh`](tests/boot-partition.sh), 9 casos): namespace de usuario + chroot mínimo con *bind mounts*, sin necesitar una ESP real ni privilegios. Simula los cuatro *layouts* de partición y los dos escenarios de dual-boot que fallaban antes.
+
+### v3.5
 - **`PRUNE_ESP_UKIS` (backup hook)**: purga de la partición de arranque los UKIs versionados cuyo kernel ya no está instalado. `kernel-install` no los borra nunca, así que `/boot/EFI/Linux` acumulaba UKIs de kernels desinstalados que, con autodetección de systemd-boot, se colgaban como entradas extra en el menú de arranque.
 - **Espacio de la ESP calculado en tiempo de ejecución** (restore hook): antes era un umbral fijo de 50 MB, menor que un UKI típico (~75 MB), así que el aviso de "poco espacio" no podía dispararse. Ahora es `ESP_MIN_FREE_MB` (20) + el tamaño de los UKIs a restaurar.
 - **Hooks parametrizables por entorno** (`TSUKI_UKI_DIR`, `TSUKI_BACKUP_DIR`, `TSUKI_LOG_FILE`): permiten ejecutar el backup hook contra un árbol de pruebas sin tocar el sistema.

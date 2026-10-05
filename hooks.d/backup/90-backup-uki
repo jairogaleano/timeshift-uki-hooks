@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Backup Script (v3.5)
+# Timeshift UKI Hooks - Backup Script (v3.6)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -79,6 +79,22 @@ is_valid_boot_partition() {
     [ "$parttype" = "bc13c2ff-59e6-4262-a352-b275fd6f7172" ]
 }
 
+# ¿Es $1 una particion de arranque candidata? Debe estar Montada y tener el
+# directorio EFI/Linux. kernel-install crea ese directorio en la particion donde
+# instala los UKIs, asi que su presencia es evidencia, no suposicion.
+# El requisito de "montada" importa: si /boot no esta montado y un restore
+# antiguo dejo un /boot/EFI/Linux en el rootfs, ese directorio no debe pasar
+# por una particion de arranque. Mismo criterio que el restore hook (v3.6), para
+# que ambos hooks apunten siempre a la misma particion.
+is_boot_partition_dir() {
+    local d="$1"
+    [ -n "$d" ] || return 1
+    [ -d "$d" ] && [ ! -L "$d" ] || return 1
+    mountpoint -q "$d" 2>/dev/null || return 1
+    [ -d "$d/EFI/Linux" ] || return 1
+    return 0
+}
+
 detect_uki_dir() {
     # Override explicito (arboles de prueba / CI)
     if [ -n "${TSUKI_UKI_DIR:-}" ] && [ -d "$TSUKI_UKI_DIR" ]; then
@@ -86,10 +102,11 @@ detect_uki_dir() {
         return 0
     fi
 
-    local dirs=("/boot/EFI/Linux" "/efi/EFI/Linux" "/boot/efi/EFI/Linux")
+    local dirs=("/boot" "/efi" "/boot/efi")
+    local d
     for d in "${dirs[@]}"; do
-        if [ -d "$d" ]; then
-            echo "$d"
+        if is_boot_partition_dir "$d"; then
+            echo "$d/EFI/Linux"
             return 0
         fi
     done

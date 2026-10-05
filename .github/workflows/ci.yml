@@ -19,7 +19,7 @@ jobs:
 
       - name: Sintaxis bash
         run: |
-          for f in install.sh hooks.d/backup/90-backup-uki hooks.d/restore/90-restore-uki tests/smoke.sh; do
+          for f in install.sh hooks.d/backup/90-backup-uki hooks.d/restore/90-restore-uki tests/smoke.sh tests/boot-partition.sh; do
             bash -n "$f" && echo "ok: $f"
           done
 
@@ -28,7 +28,18 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck
           shellcheck -S warning install.sh hooks.d/backup/90-backup-uki \
-                                      hooks.d/restore/90-restore-uki tests/smoke.sh
+                                      hooks.d/restore/90-restore-uki tests/smoke.sh \
+                                      tests/boot-partition.sh
+
+      # tests/boot-partition.sh levanta un namespace de usuario + chroot para
+      # simular el dual-boot. Ubuntu 24.04+ trae AppArmor con
+      # apparmor_restrict_unprivileged_userns=1, que puede bloquearlo.
+      - name: Namespaces de usuario
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+          unshare -r -m -p -f --mount-proc true \
+            || { echo "::error::no se pueden crear namespaces de usuario"; exit 1; }
+          echo "namespaces OK"
 
       # La version se declaraba a mano en varios ficheros y ya habia derivado
       # (el titulo del README se quedo en v3.2 mientras el codigo iba en v3.4).
@@ -45,10 +56,7 @@ jobs:
           grep -q "^## \[${v}\]"            CHANGELOG.md
           echo "Coherente en VERSION, ambos hooks, install.sh, README y CHANGELOG"
 
-      - name: Smoke test del backup hook
+      # smoke.sh cubre el backup hook sobre un arbol temporal y delega en
+      # boot-partition.sh para la resolucion de la particion de arranque.
+      - name: Smoke test
         run: ./tests/smoke.sh
-
-      # El restore hook necesita una ESP real montada, asi que aqui solo se
-      # comprueba que es bash valido (ya cubierto arriba con bash -n).
-      - name: Nota sobre cobertura
-        run: echo "El restore hook se valida con bash -n + shellcheck; su logica exige una ESP montada y no se cubre automaticamente."

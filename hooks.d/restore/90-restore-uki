@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Restore Script (v3.5)
+# Timeshift UKI Hooks - Restore Script (v3.6)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -113,11 +113,39 @@ if detect_chroot; then
 fi
 
 # 1. Resolver el punto de montaje de la particion de arranque
-# Busca en orden: /boot, /efi, /boot/efi, luego deteccion dinamica por tipo vfat
+#
+# Regla (v3.6): una particion es candidata SOLO si tiene el directorio
+# EFI/Linux. kernel-install crea ese directorio en la particion donde instala
+# los UKIs, asi que su presencia es evidencia, no suposicion. Antes (hasta
+# v3.5) se aceptaba el primer mountpoint de /boot, /efi, /boot/efi sin
+# comprobar nada, de modo que con dos vfat montadas (dual-boot) y la particion
+# correcta sin montar, los UKIs acababan en la particion equivocada; y como el
+# destino se creaba con `mkdir -p`, el error ademas se persistia. Ver README,
+# seccion "Deteccion de la particion de arranque".
+#
+# Candidatos, por orden de preferencia:
+#   1. /boot, /efi, /boot/efi -> montadas y con el directorio EFI/Linux.
+#   2. Cualquier otra vfat montada, que ademas debe tener PARTTYPE de ESP
+#      (c12a7328) o XBOOTLDR (bc13c2ff).
+# El PARTTYPE solo se exige al buscar fuera de las rutas estandar, que es
+# donde cabe confundirse con un USB; en las rutas estandar basta con que la
+# particion este montada y tenga EFI/Linux, porque ahi la presencia del
+# directorio ya es evidencia de que es la de los UKIs.
+# Si no hay ninguna candidata, el hook ABORTA: no inventa un destino.
+is_boot_partition_dir() {
+    local d="$1"
+    [ -n "$d" ] || return 1
+    [ -d "$d" ] && [ ! -L "$d" ] || return 1
+    mountpoint -q "$d" 2>/dev/null || return 1
+    [ -d "$d/EFI/Linux" ] || return 1
+    return 0
+}
+
 resolve_esp_mount() {
     local dirs=("/boot" "/efi" "/boot/efi")
+    local d
     for d in "${dirs[@]}"; do
-        if [ -d "$d" ] && [ ! -L "$d" ] && mountpoint -q "$d" 2>/dev/null; then
+        if is_boot_partition_dir "$d"; then
             echo "$d"
             return 0
         fi
@@ -143,21 +171,27 @@ if ! TARGET_MNT=$(resolve_esp_mount); then
             if ! mountpoint -q "$mnt" 2>/dev/null; then
                 log "INFO" "Intentando montar $mnt..."
                 if mount "$mnt" 2>/dev/null; then
-                    TARGET_MNT="$mnt"
                     log "INFO" "$mnt montado exitosamente."
-                    break
                 fi
             fi
         fi
     done
+    # Reintentar la resolucion: lo que vale es lo que resolve_esp_mount()
+    # acepte, NO lo que se haya conseguido montar. Antes se aceptaba aqui el
+    # primer mountpoint sin validar, que es justo el bug que se corrige.
+    TARGET_MNT=$(resolve_esp_mount || true)
 fi
 
 if [ -z "$TARGET_MNT" ]; then
-    log "ERROR" "No se pudo detectar ni montar la particion EFI (ESP)"
+    log "ERROR" "No se encontro la particion de arranque con los UKIs (ningun EFI/Linux)."
+    log "ERROR" "Se ha buscado en: /boot, /efi, /boot/efi y en cualquier vfat con PARTTYPE de ESP (c12a7328) o XBOOTLDR (bc13c2ff)."
+    log "ERROR" "Si los UKIs estan en una particion montada en otro sitio, montala antes de restaurar."
+    log "ERROR" "Si la particion esta realmente vacia, crea el directorio a mano: mkdir -p <mnt>/EFI/Linux"
+    log "ERROR" "Mas detalle en el README, seccion 'Deteccion de la particion de arranque'."
     exit 1
 fi
 
-log "INFO" "ESP montada en: $TARGET_MNT"
+log "INFO" "Particion de arranque (UKIs) en: $TARGET_MNT"
 RESTORE_STARTED=true
 
 # Comprobar si esta montado en modo solo lectura (ro)
@@ -171,10 +205,16 @@ if findmnt -O ro "$TARGET_MNT" >/dev/null 2>&1; then
 fi
 
 # 3. Determinar la ruta de destino para UKIs
+# El directorio YA tiene que existir: resolve_esp_mount() solo acepta
+# particiones que lo tienen. Antes (hasta v3.5) se creaba con `mkdir -p`, lo
+# que hacia que una eleccion erronea de particion quedara "confirmada" para
+# siempre en la particion equivocada.
 UKI_DIR="$TARGET_MNT/EFI/Linux"
 if [ ! -d "$UKI_DIR" ]; then
-    mkdir -p "$UKI_DIR"
-    log "INFO" "Directorio $UKI_DIR creado en ESP."
+    log "ERROR" "La particion de arranque $TARGET_MNT no tiene el directorio $UKI_DIR"
+    log "ERROR" "No se crea automaticamente para no dejar UKIs en una particion que no los contenia."
+    log "ERROR" "Si es el destino correcto, crealo a mano: mkdir -p $UKI_DIR"
+    exit 1
 fi
 
 # 4. Verificar si existe el directorio de respaldo
@@ -248,11 +288,18 @@ for uki_backup in "${backup_ukis[@]}"; do
     expected_sha=""
 
     if [ -f "$sha_file" ]; then
-        expected_sha=$(<"$sha_file")
+        # Se lee el primer campo del fichero, no el fichero entero. El backup
+        # hook escribe solo el hash, pero un .sha256 generado con `sha256sum
+        # UKI > UKI.sha256` (poco habitual pero muy natural, y lo que produce
+        # `sha256sum -c`) trae "hash  nombre". Antes se comparaba el fichero
+        # entero contra el hash pelado, con lo que ese formato hacia fallar la
+        # verificacion (y abortar la restauracion) aunque el hash fuese
+        # correcto.
+        expected_sha=$(awk '{print $1}' "$sha_file" 2>/dev/null)
         actual_sha=$(sha256sum "$uki_backup" | awk '{print $1}')
 
-        if [ "$expected_sha" != "$actual_sha" ]; then
-            log "ERROR" "Checksum fallo para $basename. Esperado: $expected_sha, Actual: $actual_sha"
+        if [ -z "$expected_sha" ] || [ "$expected_sha" != "$actual_sha" ]; then
+            log "ERROR" "Checksum fallo para $basename. Esperado: ${expected_sha:-<vacio>}, Actual: $actual_sha"
             exit 1
         fi
         log "INFO" "Checksum verificado para $basename"

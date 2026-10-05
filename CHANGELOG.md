@@ -4,6 +4,25 @@ Todas las versiones significativas de este proyecto. Formato basado en [Keep a C
 
 ---
 
+## [3.6] - 2026-10-05
+
+### Fixed
+- ⚠️ **El restore hook elegia la particion de arranque equivocada** (bug, no solo fragilidad). `resolve_esp_mount()` devovia el **primer mountpoint** de `/boot`, `/efi`, `/boot/efi` sin comprobar nada, y el destino se creaba con `mkdir -p`. Con dos vfat montadas y solo una con UKIs (el layout de dual-boot), si la particion correcta no estaba montada el hook caia en la otra, **creaba `EFI/Linux` ahi** y escribia los UKIs en la particion equivocada; con `PRUNE_UKIS=true` ademas borraba de ella los `.efi` que no estuvieran en el respaldo. El `mkdir -p` hacia que el error quedara "confirmado" para siempre. Afectaba sobre todo al chroot desde Live USB. **Corregido**: una particion solo es candidata si esta montada y tiene el directorio `EFI/Linux`, y si no hay ninguna el hook **aborta con un error explicito** en vez de adivinar. El `mkdir -p` desaparece: el destino ya no se inventa.
+- **Los dos hooks puedan dejar de apuntar a la misma particion.** El backup hook ya exigia que `EFI/Linux` existiera; el restore no. Ahora los dos aplican exactamente la misma regla (`is_boot_partition_dir`), asi que no pueden discrepar.
+- **Checksum del UKI con formato `sha256sum` abortaba la restauracion.** Se comparaba el **fichero entero** contra el hash pelado, asi que un `.sha256` con formato `<hash>  <nombre>` (el de `sha256sum X > X.sha256`, o sea el que produce `sha256sum -c`) fallaba siempre y el hook salia con error aunque el hash fuese correcto. Ahora se lee el primer campo, con lo que se aceptan ambos formatos. El backup hook sigue escribiendo el hash pelado, que es el formato que se documenta.
+- **El fallback que monta particiones aceptaba cualquiera que se montara bien.** Se reintenta la resolucion y solo se usa lo que `resolve_esp_mount()` acepte; antes se aceptaba el primer mountpoint sin validar, que es justo el bug corregido.
+
+### Added
+- **`tests/boot-partition.sh`**: cobertura automatica del restore hook, que hasta v3.5 no tenia ninguna. Levanta un namespace de usuario y un chroot minimo donde `/boot` y `/efi` se montan o se dejan como directorios planos, de modo que se ejercita el codigo de produccion tal cual (sin seams ni variables que solo usen los tests). Cubre 9 casos: los cuatro layouts de particion con UKIs en `/boot` y/o `/efi`, los dos escenarios de dual-boot donde la particion de los UKIs esta sin montar (que son los que fallaban antes), el caso "ninguna sirve" (abortar sin crear nada), y tres de checksum (formato `sha256sum` aceptado, corrupto abortado, UKI sin kernel instalado tambien restaurado). `tests/smoke.sh` lo invoca, asi que `./tests/smoke.sh` sigue siendo la entrada unica.
+- **Comprobacion de namespaces de usuario en CI**: Ubuntu 24.04+ restrict con AppArmor `apparmor_restrict_unprivileged_userns`; la CI lo desactiva y falla de forma explicita si aun asi no se pueden crear, en vez de saltarse el test en silencio.
+
+### Changed
+- El PARTTYPE (ESP `c12a7328` / XBOOTLDR `bc13c2ff`) se exige **solo** al buscar fuera de las rutas estandar, que es donde cabe confundirse con un USB. En `/boot`, `/efi` y `/boot/efi` basta con que la particion este montada y tenga `EFI/Linux`.
+- **Documentacion**: la seccion "Deteccion de la particion de arranque" del README pasa de describir la limitacion a describir la regla vigente, con la tabla de criterios de ambos hooks y que hacer si el hook aborta. `ARCHITECTURE.md` actualizado. La limitacion documentada en v3.5 como "preexistente, no corregida" queda resuelta.
+- Version bump a v3.6 en scripts, `install.sh` y documentacion.
+
+---
+
 ## [3.5] - 2026-10-05
 
 ### Added
@@ -25,10 +44,10 @@ Todas las versiones significativas de este proyecto. Formato basado en [Keep a C
 - Version bump a v3.5 en scripts, `install.sh` y documentacion.
 
 ### Documented
-- ⚠️ **Limitacion conocida, preexistente: el restore hook no valida la particion de arranque que elige.** `resolve_esp_mount()` devuelve el primer mountpoint de `/boot`, `/efi`, `/boot/efi` sin comprobar que contenga `EFI/Linux` ni que sea ESP/XBOOTLDR, y como el destino se crea con `mkdir -p`, una mala eleccion deja los UKIs en la particion equivocada (con `PRUNE_UKIS=true` borra ademas los `.efi` que no esten en el respaldo). Se manifiesta solo con **dos vfat montadas y una sola con UKIs** (dual-boot), y sobre todo en el chroot desde Live USB. El backup hook **si** comprueba que el directorio exista, asi que los dos hooks pueden apuntar a particiones distintas. Documentado en el README ("Deteccion de la particion de arranque", con comandos para verificar y evitarlo) y en la tabla de escenarios de `ARCHITECTURE.md`. **No corregido en v3.5** (cambia el criterio de seleccion: habria que exigir `EFI/Linux` o PARTTYPE valido en el camino rapido).
+- ⚠️ **Limitacion conocida, preexistente: el restore hook no valida la particion de arranque que elige.** `resolve_esp_mount()` devuelve el primer mountpoint de `/boot`, `/efi`, `/boot/efi` sin comprobar que contenga `EFI/Linux` ni que sea ESP/XBOOTLDR, y como el destino se crea con `mkdir -p`, una mala eleccion deja los UKIs en la particion equivocada (con `PRUNE_UKIS=true` borra ademas los `.efi` que no esten en el respaldo). Se manifiesta solo con **dos vfat montadas y una sola con UKIs** (dual-boot), y sobre todo en el chroot desde Live USB. El backup hook **si** comprueba que el directorio exista, asi que los dos hooks pueden apuntar a particiones distintas. Documentado en el README ("Deteccion de la particion de arranque", con comandos para verificar y evitarlo) y en la tabla de escenarios de `ARCHITECTURE.md`. **No corregido en v3.5** (cambia el criterio de seleccion: habria que exigir `EFI/Linux` o PARTTYPE valido en el camino rapido). **Resuelto en v3.6.**
 
 ### Notes
-- El restore hook **no tiene cobertura automatica**: su logica exige una ESP real montada. En CI solo se valida con `bash -n` y ShellCheck.
+- ~~El restore hook **no tiene cobertura automatica**: su logica exige una ESP real montada. En CI solo se valida con `bash -n` y ShellCheck.~~ **Resuelto en v3.6**: `tests/boot-partition.sh` cubre su resolucion de particion y la verificacion de checksums con un namespace de usuario + chroot.
 - Los UKIs se conservan dentro de cada snapshot, asi que el directorio de respaldo ocupa ~75 MB adicionales por snapshot (Btrfs no deduplica entre subvolumenes).
 
 ---

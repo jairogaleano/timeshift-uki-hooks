@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Instalador v3.5
+# Timeshift UKI Hooks - Instalador v3.6
 # Soporte universal: Arch, Debian, Fedora, openSUSE, Void, Gentoo, etc.
 #
 
