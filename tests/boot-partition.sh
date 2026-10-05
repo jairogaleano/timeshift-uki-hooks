@@ -55,6 +55,7 @@ CUR_EFI="${MID}-${KVER}.efi"
 TMP="$(mktemp -d)"
 R="$TMP/root"
 LOG="$R/tmp/restore.log"
+ERR="$R/tmp/restore.err"
 cleanup() {
     umount "$R/boot" "$R/efi" 2>/dev/null || true
     umount -R "$R" 2>/dev/null || true
@@ -67,6 +68,12 @@ fail() {
     echo "  FALLO: $*" >&2
     echo "  --- log del hook ---" >&2
     sed 's/^/  | /' "$LOG" >&2 2>/dev/null || echo "  | (sin log)" >&2
+    # El stderr del hook se conserva: sin el, un fallo como un rc=127 no dice
+    # nada sobre la causa.
+    if [ -s "$ERR" ]; then
+        echo "  --- stderr del hook ---" >&2
+        sed 's/^/  ! /' "$ERR" >&2
+    fi
     exit 1
 }
 
@@ -105,9 +112,19 @@ build_chroot() {
     : > "$R/etc/fstab"
     cp "$RESTORE_HOOK" "$R/hooks.d/restore/90-restore-uki"
     chmod +x "$R/hooks.d/restore/90-restore-uki"
-    # Fallo temprano y legible si el chroot no esta bien montado.
-    chroot "$R" /bin/bash -c 'command -v sha256sum findmnt mountpoint df' >/dev/null \
-        || { echo "FALLO: el chroot no tiene las utilidades basicas." >&2; exit 1; }
+    # Fallo temprano y legible si el chroot no esta bien montado. Se comprueban
+    # TODOS los comandos externos que usan los hooks, no solo algunos: si el
+    # chroot se monta mal, quiero un "falta X" claro y no un rc=127 sin
+    # contexto blamed al hook.
+    missing=$(chroot "$R" /bin/bash -c '
+        for c in awk basename cp date df findmnt head lsblk mkdir mktemp mount \
+                 mountpoint mv readlink sha256sum stat tail umount; do
+            command -v "$c" >/dev/null 2>&1 || echo "$c"
+        done' 2>/dev/null)
+    if [ -n "$missing" ]; then
+        echo "FALLO: el chroot no tiene estas utilidades: $(echo $missing)" >&2
+        exit 1
+    fi
 }
 
 # --- Escenarios ------------------------------------------------------------
@@ -149,10 +166,11 @@ setup() {
 
 run_restore() {
     : > "$LOG"
+    : > "$ERR"
     set +e
     chroot "$R" /bin/bash -c \
         "TSUKI_BACKUP_DIR=/backup TSUKI_LOG_FILE=/tmp/restore.log /hooks.d/restore/90-restore-uki" \
-        >/dev/null 2>&1
+        >"$ERR" 2>&1
     echo $?
     set -e
 }
