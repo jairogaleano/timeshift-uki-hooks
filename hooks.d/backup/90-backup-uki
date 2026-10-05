@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Backup Script (v3.4)
+# Timeshift UKI Hooks - Backup Script (v3.5)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -33,14 +33,29 @@
 set -euo pipefail
 
 # --- CONFIGURACION ---
-BACKUP_DIR="/etc/timeshift/uki-backup"
-LOG_FILE="/var/log/timeshift.log"
+# Rutas parametrizables por entorno (TSUKI_*) para poder ejecutar el hook contra
+# un arbol de pruebas sin tocar el sistema real (ver tests/smoke.sh y CI).
+BACKUP_DIR="${TSUKI_BACKUP_DIR:-/etc/timeshift/uki-backup}"
+LOG_FILE="${TSUKI_LOG_FILE:-/var/log/timeshift.log}"
 # Elimina del respaldo los UKIs que no corresponden al kernel actualmente en
 # ejecucion (uname -r). Con layout kernel-install cada snapshot viaja SOLO con
 # el UKI vigente, para que al restaurar se devuelva exactamente el del momento
 # de la snapshot. Desactivar conserva todos los UKIs versionados acumulados.
 PRUNE_OLD_UKIS=true
+# v3.5: elimina de la PARTICION DE ARRANQUE los UKIs versionados cuyo kernel ya
+# no esta instalado (no existe /usr/lib/modules/<kver>). kernel-install no poda,
+# asi que sin esto /boot/EFI/Linux acumula UKIs de kernels ya desinstalados y,
+# con autodeteccion de systemd-boot, cada uno se convierte en una entrada mas
+# del menu de arranque. Nunca toca el UKI del kernel en ejecucion (uname -r),
+# ni los kernels instalados aunque no esten en ejecucion, ni el preset clasico
+# (arch-linux.efi), cuyo nombre no lleva version y por tanto no se puede
+# decidir. Desactivar conserva todos los UKIs de la ESP.
+PRUNE_ESP_UKIS=true
 # ----------------------
+
+# Kernel en ejecucion. Se resuelve aqui (no dentro de compute_current_ukis)
+# porque prune_esp_stale_ukis tambien lo necesita y se ejecuta antes.
+CURRENT_KVER="$(uname -r)"
 
 log() {
     local level="$1"
@@ -65,6 +80,12 @@ is_valid_boot_partition() {
 }
 
 detect_uki_dir() {
+    # Override explicito (arboles de prueba / CI)
+    if [ -n "${TSUKI_UKI_DIR:-}" ] && [ -d "$TSUKI_UKI_DIR" ]; then
+        echo "$TSUKI_UKI_DIR"
+        return 0
+    fi
+
     local dirs=("/boot/EFI/Linux" "/efi/EFI/Linux" "/boot/efi/EFI/Linux")
     for d in "${dirs[@]}"; do
         if [ -d "$d" ]; then
@@ -126,6 +147,71 @@ compute_current_ukis() {
             current_uki_names+=("${uki##*/}")
         done
     fi
+}
+
+# --- v3.5: purga de la particion de arranque (kernel-install) ---
+
+# ¿Esta este kernel instalado? (tiene directorio de modulos). El kernel en
+# ejecucion se da siempre por bueno, aunque /usr/lib/modules no sea legible.
+kernel_is_installed() {
+    local kver="$1"
+    [ -n "$kver" ] || return 1
+    [ "$kver" = "$CURRENT_KVER" ] && return 0
+    [ -d "/usr/lib/modules/$kver" ] && return 0
+    return 1
+}
+
+# Elimina de $UKI_DIR los UKIs versionados (<machine-id>-<kver>.efi) cuyo kernel
+# ya no esta instalado. kernel-install nunca poda, por lo que la ESP acumula
+# UKIs de kernels desinstalados; con autodeteccion de systemd-boot cada uno es
+# una entrada mas del menu de arranque. Nunca borra el UKI del kernel en
+# ejecucion ni de un kernel instalado, ni toca nombres sin version (preset
+# clasico arch-linux.efi), que no permiten decidir nada.
+prune_esp_stale_ukis() {
+    if [ "$PRUNE_ESP_UKIS" != true ]; then
+        return 0
+    fi
+
+    shopt -s nullglob
+    local esp_ukis=("$UKI_DIR"/*.efi)
+    shopt -u nullglob
+    if [ ${#esp_ukis[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    # Solo con layout kernel-install hay UKIs versionados que podar. Sin ellos
+    # (preset clasico) no hay version en el nombre: no se toca nada.
+    local has_versioned=false
+    for uki in "${esp_ukis[@]}"; do
+        if [[ "${uki##*/}" =~ ^[0-9a-f]{32}-.+\.efi$ ]]; then
+            has_versioned=true
+            break
+        fi
+    done
+    if [ "$has_versioned" != true ]; then
+        return 0
+    fi
+
+    local base kver pruned=0
+    for uki in "${esp_ukis[@]}"; do
+        base="${uki##*/}"
+        [[ "$base" =~ ^[0-9a-f]{32}-(.+)\.efi$ ]] || continue
+        kver="${BASH_REMATCH[1]}"
+        if kernel_is_installed "$kver"; then
+            continue
+        fi
+        if rm -f "$uki"; then
+            log "INFO" "Pruned UKI de la particion de arranque (kernel $kver no instalado): $base"
+            pruned=$((pruned + 1))
+        else
+            log "WARN" "No se pudo eliminar el UKI obsoleto de la ESP: $base"
+        fi
+    done
+
+    if [ "$pruned" -gt 0 ]; then
+        log "INFO" "Purgados $pruned UKI(s) obsoletos de $UKI_DIR (kernel ya desinstalado)"
+    fi
+    return 0
 }
 
 # Purga en el destino los UKIs que ya no estan en el conjunto vigente
@@ -259,6 +345,19 @@ fi
 
 log "INFO" "UKI directory detectado: $UKI_DIR"
 
+# Limpiar archivos .bak huerfanos en la ESP (rotaciones viejas que no deberian estar)
+shopt -s nullglob
+for bak_file in "$UKI_DIR"/*.bak.*.efi "$UKI_DIR"/*.bak.efi; do
+    [ -f "$bak_file" ] || continue
+    rm -f "$bak_file"
+    log "INFO" "Limpiado .bak huerfano en ESP: ${bak_file##*/}"
+done
+shopt -u nullglob
+
+# v3.5: purgar de la ESP los UKIs de kernels ya desinstalados (kernel-install no
+# lo hace). Se hace ANTES de inventariar para que el analisis refleje la ESP real.
+prune_esp_stale_ukis
+
 shopt -s nullglob
 uki_files=("$UKI_DIR"/*.efi)
 shopt -u nullglob
@@ -269,15 +368,6 @@ if [ ${#uki_files[@]} -eq 0 ]; then
 fi
 
 log "INFO" "Iniciando analisis de UKIs en $UKI_DIR"
-
-# Limpiar archivos .bak huerfanos en la ESP (rotaciones viejas que no deberian estar)
-shopt -s nullglob
-for bak_file in "$UKI_DIR"/*.bak.*.efi "$UKI_DIR"/*.bak.efi; do
-    [ -f "$bak_file" ] || continue
-    rm -f "$bak_file"
-    log "INFO" "Limpiado .bak huerfano en ESP: ${bak_file##*/}"
-done
-shopt -u nullglob
 
 # Conjunto de UKIs vigentes (solo los del kernel actual)
 compute_current_ukis

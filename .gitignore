@@ -1,0 +1,17 @@
+# Artefactos de makepkg / AUR
+*.pkg.tar.*
+!*.pkg.tar.*
+src/
+pkg/
+timeshift-uki-hooks-git/
+.srcdist/
+
+# UKIs y sus checksums (nunca deben acabar en el repo)
+*.efi
+*.efi.sha256
+uki-backup/
+
+# Editores y sistema
+*.swp
+*~
+.DS_Store

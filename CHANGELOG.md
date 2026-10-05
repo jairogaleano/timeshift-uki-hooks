@@ -4,6 +4,32 @@ Todas las versiones significativas de este proyecto. Formato basado en [Keep a C
 
 ---
 
+## [3.5] - 2026-10-05
+
+### Added
+- **`PRUNE_ESP_UKIS` (backup hook)**: purga de la **particion de arranque** los UKIs versionados `<machine-id>-<kver>.efi` cuyo kernel ya no esta instalado (`kernel_is_installed`: no existe `/usr/lib/modules/<kver>` y no es `uname -r`). Se ejecuta antes de inventariar la ESP. `kernel-install` nunca borra los UKIs de kernels desinstalados, de modo que `/boot/EFI/Linux` acumulaba UKIs muertos que, con autodeteccion de systemd-boot, aparecian como entradas extra en el menu de arranque. Guardas: nunca borra el UKI del kernel en ejecucion, ni los de kernels instalados no ejecutados (`linux-lts`, `linux-zen`), ni el preset clasico `arch-linux.efi` (sin version no hay nada que decidir); y no hace nada si la ESP no tiene UKIs versionados. Configurable con `PRUNE_ESP_UKIS=true/false` (por defecto `true`).
+- **Rutas parametrizables por entorno** en ambos hooks: `TSUKI_BACKUP_DIR`, `TSUKI_LOG_FILE` y `TSUKI_UKI_DIR`. En produccion no se usan; permiten ejecutar los hooks contra un arbol de pruebas sin tocar el sistema real.
+- **`VERSION`**: version unica del repositorio.
+- **CI** (`.github/workflows/ci.yml`): `bash -n` de los cuatro scripts, ShellCheck en nivel `warning` sin excepciones, comprobacion de coherencia de version contra `VERSION` y smoke test del backup hook.
+- **`tests/smoke.sh`**: smoke test que ejecuta el backup hook de verdad contra un arbol temporal y verifica la purga de la ESP, el respaldo selectivo con su `.sha256`, los dos layouts de snapshot (Btrfs y rsync) y la idempotencia de una segunda ejecucion.
+- **`install.sh`**: comprobaciones previas (Timeshift instalado, `EFI/Linux` presente en alguna vfat) y aviso si los hooks actuales pertenecen a un paquete, con la recomendacion de actualizar ese paquete en su lugar.
+
+### Fixed
+- **Espacio de la ESP calculado en tiempo de ejecucion** (restore hook): el umbral era fijo (`MIN_ESP_SPACE_MB=50`), menor que un UKI tipico (~75 MB), por lo que el aviso de "poco espacio" no podia dispararse cuando realmente no cabia. Ahora se calcula como `ESP_MIN_FREE_MB` (20) + el tamano real de los UKIs a restaurar.
+- **Los hooks de git no eran ejecutables** (`100644`): un clon recien hecho no permitia ejecutarlos directamente. Ahora `100755`.
+- **`install.sh`**: el aviso de dependencias fallaba en modo no interactivo por una comparacion `=~` con comillas en el lado derecho; se cambio por un patron glob literal.
+- **`IN_CHROOT` estaba asignado pero nunca se usaba** (restore hook): el log decia "ajustando rutas de montaje" pero el hook no ajustaba ninguna. Se elimino la variable y el mensaje se corrige.
+
+### Changed
+- **Documentacion**: titulo del README sincronizado con la version real (llevaba en `v3.2` con el codigo en `v3.4`), tabla de plataformas ajustada a lo real (Arch probado; el resto "sin probar"), `ARCHITECTURE.md` y README alineados con el comportamiento real de `PRUNE_OLD_UKIS` y de la purga de la ESP, y nueva seccion de Configuracion con todas las variables.
+- Version bump a v3.5 en scripts, `install.sh` y documentacion.
+
+### Notes
+- El restore hook **no tiene cobertura automatica**: su logica exige una ESP real montada. En CI solo se valida con `bash -n` y ShellCheck.
+- Los UKIs se conservan dentro de cada snapshot, asi que el directorio de respaldo ocupa ~75 MB adicionales por snapshot (Btrfs no deduplica entre subvolumenes).
+
+---
+
 ## [3.4] - 2026-08-25
 
 ### Added
@@ -14,7 +40,7 @@ Todas las versiones significativas de este proyecto. Formato basado en [Keep a C
 - Restore hook: eliminados bloques manuales de cleanup (`mount -o remount,ro`) en cada ruta de error — el trap EXIT los maneja de forma centralizada y segura.
 
 ### Changed
-- `ARCHITECTURE.md` sincronizado con el codigo real: eliminadas descripciones de busqueda de ESP por PARTTYPE GUID en el restore hook (no existe en el codigo; solo el backup hook la tiene). Corregido diagrama de flujo.
+- `ARCHITECTURE.md` sincronizado con el codigo real: el diagrama de flujo del restore hook ya no atribuia al hook una busqueda de ESP por PARTTYPE GUID como propio paso de decision. (La funcion `is_valid_boot_partition()` **si** existe en el restore hook, pero se aplica dentro de `resolve_esp_mount()`, no como etapa separada.)
 - Version bump a v3.4.
 
 ---

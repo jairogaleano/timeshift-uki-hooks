@@ -1,12 +1,15 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Instalador v3.4
+# Timeshift UKI Hooks - Instalador v3.5
 # Soporte universal: Arch, Debian, Fedora, openSUSE, Void, Gentoo, etc.
 #
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Version unica del repositorio (ver tambien .github/workflows/ci.yml, que
+# comprueba que todos los ficheros la declaran coherente).
+VERSION="$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo "desconocida")"
 
 if [ "$EUID" -ne 0 ]; then
   echo "Por favor, ejecuta como root (pkexec ./install.sh o sudo ./install.sh)"
@@ -74,7 +77,7 @@ for dep in "${!DEP_PKG[@]}"; do
   if ! command -v "$dep" &>/dev/null; then
     MISSING_DEPS+=("$dep")
     pkg="${DEP_PKG[$dep]}"
-    if [[ ! " ${MISSING_PKGS[*]:-} " =~ " ${pkg} " ]]; then
+    if [[ " ${MISSING_PKGS[*]:-} " != *" ${pkg} "* ]]; then
       MISSING_PKGS+=("$pkg")
     fi
   fi
@@ -101,7 +104,53 @@ if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
 fi
 echo "Todas las dependencias encontradas."
 
-echo "Instalando Timeshift UKI Hooks v3.4..."
+# --- Comprobaciones previas (avisos, no abortan) ---
+
+echo "Comprobando el entorno..."
+
+if ! command -v timeshift &>/dev/null; then
+  echo "AVISO: 'timeshift' no esta instalado. Los hooks quedaran inactivos hasta que lo instales."
+else
+  echo "  timeshift: $(command -v timeshift)"
+fi
+
+# Los hooks solo hacen algo si existe un directorio EFI/Linux en una particion
+# vfat. Se avisa para que un fallo posterior no se confunda con un bug.
+esp_found=false
+while read -r mnt; do
+    if [ -d "$mnt/EFI/Linux" ]; then
+        esp_found=true
+        break
+    fi
+done < <(findmnt -rno TARGET -t vfat 2>/dev/null || true)
+if [ "$esp_found" != true ]; then
+  echo "AVISO: no se encuentra ningun directorio EFI/Linux en las particiones vfat montadas."
+  echo "       Revisa que la ESP este montada (p. ej. /boot o /efi)."
+fi
+
+# Si los hooks actuales pertenecen a un paquete, install.sh los sobreescribe
+# fuera del gestor de paquetes: la metadata del paquete quedara mintiendo
+# (pacman -Qkk marcara los ficheros como alterados). Se avisa y se indica la
+# via recomendada.
+for hook_path in /etc/timeshift/backup-hooks.d/90-backup-uki \
+                 /etc/timeshift/restore-hooks.d/90-restore-uki; do
+  [ -f "$hook_path" ] || continue
+  owner=""
+  if command -v pacman &>/dev/null; then
+    owner=$(pacman -Qo "$hook_path" 2>/dev/null | awk '{print $5}' || true)
+  elif command -v dpkg &>/dev/null; then
+    owner=$(dpkg -S "$hook_path" 2>/dev/null | cut -d: -f1 || true)
+  elif command -v rpm &>/dev/null; then
+    owner=$(rpm -qf "$hook_path" 2>/dev/null || true)
+  fi
+  if [ -n "$owner" ]; then
+    echo "AVISO: $hook_path pertenece al paquete '$owner'."
+    echo "       install.sh lo va a sobreescribir fuera del gestor de paquetes."
+    echo "       Recomendado: actualiza ese paquete en vez de usar install.sh."
+  fi
+done
+
+echo "Instalando Timeshift UKI Hooks v${VERSION}..."
 
 # Crear directorios si no existen
 mkdir -p /etc/timeshift/backup-hooks.d
@@ -122,5 +171,9 @@ echo "Aplicando permisos de ejecucion..."
 chmod +x /etc/timeshift/backup-hooks.d/90-backup-uki
 chmod +x /etc/timeshift/restore-hooks.d/90-restore-uki
 
-echo "Instalacion/Actualizacion a v3.4 completada correctamente."
+echo "Instalacion/Actualizacion a v${VERSION} completada correctamente."
 echo "Los hooks han sido instalados con nombres estandar para compatibilidad con run-parts."
+echo ""
+echo "Si no los instalas con el paquete (AUR: timeshift-uki-hooks-git), recuerda que"
+echo "install.sh deja los ficheros fuera del gestor de paquetes: una actualizacion"
+echo "del paquete o una restauracion pueden volver a sobrescribirlos."

@@ -1,6 +1,6 @@
-# Timeshift UKI Hooks v3.2
+# Timeshift UKI Hooks v3.5
 
-Sistema de hooks para **Timeshift** que respalda y restaura imágenes **UKI (Unified Kernel Images)** en sistemas con **Btrfs + Secure Boot**. Compatible con múltiples distribuciones Linux.
+Sistema de hooks para **Timeshift** que respalda y restaura imágenes **UKI (Unified Kernel Images)** en sistemas con **Btrfs + Secure Boot**.
 
 ## 📋 Tabla de Contenidos
 
@@ -12,8 +12,10 @@ Sistema de hooks para **Timeshift** que respalda y restaura imágenes **UKI (Uni
 - [Uso](#uso)
 - [Integración con pacman](#integración-con-pacman-timeshift-autosnap)
 - [Soporte de kernel-install](#soporte-de-kernel-install)
+- [Configuración](#configuración)
 - [Seguridad](#seguridad)
 - [Depuración e Integración de Logs](#depuración-e-integración-de-logs)
+- [Desarrollo y CI](#desarrollo-y-ci)
 - [Changelog](#changelog)
 - [Licencia](#licencia)
 
@@ -40,6 +42,7 @@ Este proyecto sincroniza los UKIs con los snapshots de Btrfs mediante hooks:
    - Escribe los UKIs **dentro del snapshot recién creado** vía `TS_SNAPSHOT_PATH` (Btrfs: `@/etc/timeshift/uki-backup/`, rsync: `etc/timeshift/uki-backup/`), dejándolo **autocontenido**
    - **Selectivo**: solo copia UKIs que cambiaron (comparación SHA256 per-file)
    - **Purga UKIs obsoletos** (`PRUNE_OLD_UKIS=true`): cada snapshot viaja solo con el UKI del kernel actual (`uname -r`); elimina versiones anteriores y el preset clásico `arch-linux.efi` en máquinas con `kernel-install`
+   - **Purga la partición de arranque** (`PRUNE_ESP_UKIS=true`, v3.5): elimina los UKIs versionados cuyo kernel ya no está instalado. `kernel-install` **no** poda, así que sin esto `/boot/EFI/Linux` acumula UKIs de kernels desinstalados y cada uno se convierte en una entrada más del menú de arranque de systemd-boot
    - Limpia archivos `.bak` y `.sha256` huérfanos automáticamente
 
 2. **Restore Hook** (`/etc/timeshift/restore-hooks.d/90-restore-uki`)
@@ -56,22 +59,31 @@ Este proyecto sincroniza los UKIs con los snapshots de Btrfs mediante hooks:
 
 | Distribución | Estado | Notas |
 |-------------|--------|-------|
-| Arch Linux / Manjaro / EndeavourOS | ✅ Completo | Soporte nativo con pacman |
-| Debian / Ubuntu / Linux Mint / Pop!_OS | ✅ Completo | Instalación vía apt |
-| Fedora | ✅ Completo | Instalación vía dnf |
-| openSUSE | ✅ Completo | Instalación vía zypper |
-| Void Linux | ✅ Completo | Instalación vía xbps |
-| Alpine Linux | ✅ Completo | Instalación vía apk |
-| Gentoo | ✅ Completo | Herramientas estándar GNU |
-| Otros (con systemd) | ✅ Compatible | Requiere util-linux y coreutils |
+| Arch Linux / Manjaro / EndeavourOS | ✅ Probado | Incluye paquete AUR (`timeshift-uki-hooks-git`) |
+| Debian / Ubuntu / Linux Mint / Pop!_OS | ⚠️ Sin probar | `install.sh` detecta apt e instala dependencias; el resto del proyecto es shell estándar |
+| Fedora | ⚠️ Sin probar | Ídem con dnf |
+| openSUSE | ⚠️ Sin probar | Ídem con zypper |
+| Void Linux | ⚠️ Sin probar | Ídem con xbps |
+| Alpine Linux | ⚠️ Sin probar | Ídem con apk (requiere bash) |
+| Gentoo y otros con systemd | ⚠️ Sin probar | Herramientas estándar GNU (`util-linux`, `coreutils`) |
 
-**Init systems soportados:** systemd, OpenRC, runit, sysvinit
+**Qué es realmente portable**: los hooks solo usan bash + `util-linux` (`findmnt`, `lsblk`, `mountpoint`) + `coreutils` (`sha256sum`, `stat`, `df`). Lo que **no** se ha probado en otras distribuciones es la integración real (Timeshift en modo Btrfs, `kernel-install`, Secure Boot), que es la parte específica de cada sistema. La CI solo cubre la lógica del backup hook, y no la ESP real.
+
+**Init systems:** los hooks no dependen del init system (los ejecuta Timeshift vía `run-parts`); el restore hook está pensado para funcionar también desde un chroot en un Live USB.
 
 ---
 
 ## 📦 Instalación
 
-### Instalación rápida
+### Opción A: paquete AUR (recomendada en Arch)
+
+```bash
+yay -S timeshift-uki-hooks-git
+```
+
+Mantiene los hooks bajo propiedad de pacman: los actualiza con el sistema y no se descuadran.
+
+### Opción B: instalador
 
 ```bash
 git clone https://github.com/jairogaleano/timeshift-uki-hooks.git
@@ -79,14 +91,17 @@ cd timeshift-uki-hooks
 sudo ./install.sh
 ```
 
+> `install.sh` deja los ficheros **fuera del gestor de paquetes**. Si ya tienes el paquete AUR instalado, no lo mezcles: o actualizas el paquete, o no usas el instalador. De lo contrario, `pacman -Qkk` marcará los hooks como alterados y una actualización del paquete los sobrescribirá sin avisar.
+
 ### Qué hace el instalador
 
 1. Detecta tu distribución y gestor de paquetes.
-2. Verifica e instalar dependencias faltantes automáticamente (`util-linux`, `coreutils`).
-3. Crea los directorios de hooks en `/etc/timeshift/`.
-4. Limpia versiones anteriores.
-5. Instala los scripts con nombres canónicos para compatibilidad con `run-parts`.
-6. Aplica permisos de ejecución.
+2. Verifica e instala dependencias faltantes (`util-linux`, `coreutils`).
+3. **Comprueba el entorno**: avisa si Timeshift no está instalado, si no hay ningún `EFI/Linux` en las vfat montadas, o si los hooks actuales pertenecen a un paquete.
+4. Crea los directorios de hooks en `/etc/timeshift/`.
+5. Limpia versiones anteriores.
+6. Instala los scripts con nombres canónicos para compatibilidad con `run-parts`.
+7. Aplica permisos de ejecución.
 
 ### Requisitos previos
 
@@ -241,11 +256,15 @@ Ejemplo (Arch + Secure Boot):
 Como coexisten **múltiples versiones de kernel a la vez**, al restaurar un snapshot antiguo es crítico que la partición de arranque quede exactamente igual que cuando se tomó ese snapshot:
 
 - El **backup hook** (v3.3) respalda **solo el UKI vigente** — el del kernel actualmente en ejecución (`uname -r`) — y lo escribe **dentro del snapshot recién creado** (vía `TS_SNAPSHOT_PATH`), dejando cada snapshot autocontenido. Con `PRUNE_OLD_UKIS=true` (por defecto) además **purga del respaldo** los `.efi` que no corresponden al kernel actual: versiones anteriores de UKIs kernel-install y el preset clásico `arch-linux.efi` (legacy tras el cambio a kernel-install). Así cada snapshot viaja solo con su UKI y al restaurar se devuelve exactamente el del momento de la snapshot.
+- El **backup hook** (v3.5) purga además la **propia partición de arranque**: `kernel-install` no borra los UKIs de kernels que se desinstalan, así que `/boot/EFI/Linux` se llenaba de UKIs muertos que, con autodetección de systemd-boot, aparecían como entradas extra en el menú de arranque. Con `PRUNE_ESP_UKIS=true` (por defecto) se eliminan los UKIs versionados `<machine-id>-<kver>.efi` cuyo kernel ya no tiene `/usr/lib/modules/<kver>`. Nunca toca el UKI del kernel en ejecución, ni los de kernels instalados que no estén en ejecución, ni el preset clásico `arch-linux.efi` (sin versión en el nombre no hay nada que decidir).
 - El **restore hook** (v3.3) hace **sync inverso**: además de copiar los UKIs del snapshot, **elimina de la partición de arranque cualquier `.efi` que no esté en el snapshot** (`PRUNE_UKIS=true`). Si quedara un UKI de un kernel más nuevo (cuyos módulos ya no existen en el root restaurado), el sistema fallaría al arrancar — exactamente el problema de "unknown filesystem type" tras una actualización.
+
+> **Nota sobre el nombre del kernel**: `uname -r` es el kernel **en ejecución**, no el instalado. Si actualizas el kernel y no reinicias, una segunda transacción de pacman creará un snapshot cuyo UKI de respaldo es el del kernel antiguo. El UKI nuevo no se pierde (está en la ESP y se regenera con `kernel-install`), pero ese snapshot no lo incluye.
 
 Para desactivar la limpieza:
 - Restore: edita `/etc/timeshift/restore-hooks.d/90-restore-uki` y pon `PRUNE_UKIS=false`.
-- Backup: edita `/etc/timeshift/backup-hooks.d/90-backup-uki` y pon `PRUNE_OLD_UKIS=false` (conserva todos los UKIs versionados acumulados).
+- Backup (respaldo): edita `/etc/timeshift/backup-hooks.d/90-backup-uki` y pon `PRUNE_OLD_UKIS=false` (conserva todos los UKIs versionados acumulados en `uki-backup/`).
+- Backup (ESP): pon `PRUNE_ESP_UKIS=false` (conserva en `/boot/EFI/Linux` los UKIs de kernels desinstalados).
 
 > **XBOOTLDR**: en sistemas con `/boot` en una partición XBOOTLDR independiente (ej. dual-boot Windows + Arch), los hooks la detectan y validan por su GUID (`bc13c2ff-...`) igual que la ESP.
 
@@ -265,6 +284,31 @@ sudo kernel-install --boot-path=/boot --esp-path=/efi add \
 ```
 
 > **Alternativa simple**: el preset de mkinitcpio con `default_uki=` (p. ej. `/boot/EFI/Linux/arch-linux.efi`) sigue siendo el camino documentado y **se regenera solo** en cada `pacman -Syu`. Los hooks funcionan igual en ambos casos.
+
+---
+
+## ⚙️ Configuración
+
+Ambos hooks se configuran editando las constantes de la cabecera de cada script.
+
+| Variable | Hook | Por defecto | Efecto |
+|---|---|---|---|
+| `PRUNE_OLD_UKIS` | backup | `true` | Purga del respaldo los UKIs que no son del kernel en ejecución |
+| `PRUNE_ESP_UKIS` | backup | `true` | Purga de la partición de arranque los UKIs cuyo kernel ya no está instalado |
+| `PRUNE_UKIS` | restore | `true` | Sincroniza la partición de arranque con el snapshot restaurado (elimina los UKIs que no están en él) |
+| `ESP_MIN_FREE_MB` | restore | `20` | Margen libre que se quiere dejar en la ESP tras restaurar |
+
+El espacio necesario se calcula en tiempo de ejecución como `ESP_MIN_FREE_MB` + el tamaño de los UKIs a restaurar. Hasta v3.4 era un umbral fijo de 50 MB, menor que un UKI típico (~75 MB), por lo que el aviso de "poco espacio" no podía dispararse cuando realmente no cabía.
+
+Variables de entorno (para pruebas; no hace falta tocarlas en producción):
+
+| Variable | Por defecto | Para qué |
+|---|---|---|
+| `TSUKI_UKI_DIR` | detección automática | Fuerza el directorio de UKIs de origen |
+| `TSUKI_BACKUP_DIR` | `/etc/timeshift/uki-backup` | Fuerza el directorio de respaldo |
+| `TSUKI_LOG_FILE` | `/var/log/timeshift.log` | Fuerza el archivo de log |
+
+`TS_SNAPSHOT_PATH` lo exporta Timeshift; el hook también lo acepta a mano.
 
 ---
 
@@ -306,8 +350,30 @@ Este proyecto se integra directamente con el sistema de registros de **Timeshift
 |---------|---------------|----------|
 | "No se pudo detectar la ESP" | USB conectado o ESP no montada | Desconectar USB o montar ESP manualmente |
 | "Checksum falló" | UKI corrupto en respaldo | Verificar integridad del SSD con SMART |
-| "Espacio insuficiente" | ESP casi llena | Limpiar kernels viejos de `/boot/EFI/Linux/` |
+| "Espacio insuficiente" | ESP casi llena | Con v3.5 el aviso calcula el espacio real que hace falta; si aparece, `PRUNE_ESP_UKIS` ya habrá liberado los UKIs de kernels desinstalados |
 | Hooks no se ejecutan | Permisos incorrectos | `chmod +x /etc/timeshift/*-hooks.d/90-*-uki` |
+| El menú de arranque ofrece kernels viejos | UKIs acumulados en la ESP | Con v3.5 se purgan solos en el siguiente snapshot; para hacerlo ya: `rm` manual de `/boot/EFI/Linux/<machine-id>-<kver>.efi` de kernels ya desinstalados |
+
+> Si tu ESP se monta con `dmask=0077` (opción habitual de `systemd-fstab-generator` en vfat), los UKIs quedan en `700` y **solo root puede leerlos**, también dentro de `/etc/timeshift/uki-backup/`. No afecta a los hooks (se ejecutan como root), pero impide comprobarlos a mano con tu usuario normal.
+
+---
+
+## 🧪 Desarrollo y CI
+
+Cada `push` a `main` ejecuta [`.github/workflows/ci.yml`](.github/workflows/ci.yml), que comprueba:
+
+1. **Sintaxis**: `bash -n` sobre `install.sh`, ambos hooks y el test.
+2. **ShellCheck** en nivel `warning` (sin excepciones: el nivel está limpio).
+3. **Coherencia de versión**: `VERSION` es la única fuente de verdad y la CI falla si `README.md`, `CHANGELOG.md`, ambos hooks o `install.sh` no la declaran igual. Antes la versión se escribía a mano en cada fichero y ya había derivado (el título del README se quedó en v3.2 mientras el código iba por v3.4).
+4. **Smoke test** del backup hook ([`tests/smoke.sh`](tests/smoke.sh)).
+
+El smoke test ejecuta el hook de verdad contra un árbol temporal (`mktemp -d`) usando las variables `TSUKI_*`, sin tocar el sistema. Comprueba la purga de la ESP, el respaldo selectivo con su `.sha256`, los dos layouts de snapshot (Btrfs y rsync) y la idempotencia de una segunda ejecución.
+
+```bash
+./tests/smoke.sh
+```
+
+El **restore hook** no tiene cobertura automática: su lógica exige una ESP real montada (`findmnt`, `df`, `mount`, remontado RW/RO) y probarlo en CI requeriría montar vfat con privilegios. En la CI solo se valida con `bash -n` y ShellCheck.
 
 ---
 
@@ -315,32 +381,24 @@ Este proyecto se integra directamente con el sistema de registros de **Timeshift
 
 Para el historial completo de cambios, ver [CHANGELOG.md](CHANGELOG.md).
 
-### v3.4 (Última versión)
+### v3.5 (Última versión)
+- **`PRUNE_ESP_UKIS` (backup hook)**: purga de la partición de arranque los UKIs versionados cuyo kernel ya no está instalado. `kernel-install` no los borra nunca, así que `/boot/EFI/Linux` acumulaba UKIs de kernels desinstalados que, con autodetección de systemd-boot, se colgaban como entradas extra en el menú de arranque.
+- **Espacio de la ESP calculado en tiempo de ejecución** (restore hook): antes era un umbral fijo de 50 MB, menor que un UKI típico (~75 MB), así que el aviso de "poco espacio" no podía dispararse. Ahora es `ESP_MIN_FREE_MB` (20) + el tamaño de los UKIs a restaurar.
+- **Hooks parametrizables por entorno** (`TSUKI_UKI_DIR`, `TSUKI_BACKUP_DIR`, `TSUKI_LOG_FILE`): permiten ejecutar el backup hook contra un árbol de pruebas sin tocar el sistema.
+- **CI** (`.github/workflows/ci.yml`): `bash -n`, ShellCheck sin excepciones, coherencia de versión contra `VERSION` y smoke test del backup hook (`tests/smoke.sh`). Antes el repositorio no tenía ninguna verificación automática.
+- **`VERSION`**: fichero único de versión; la CI obliga a que todos los ficheros lo declaren igual.
+- **Los hooks de git eran `644`** (no ejecutables en un clon recién hecho). Ahora son `755`.
+- **Restauración**: los UKIs se conservan dentro de cada snapshot, así que el directorio de respaldo ocupa ~75 MB adicionales por snapshot (Btrfs no deduplica entre subvolúmenes).
+- **Correcciones de documentación**: título del README sincronizado con la versión real, tabla de plataformas ajustada a lo que está probado, `ARCHITECTURE.md` y este README alineados con `PRUNE_OLD_UKIS`, y eliminas dos afirmaciones que no se correspondían con el código (la detección de ESP por PARTTYPE sí existe en el restore hook, y `IN_CHROOT` nunca se usó para ajustar rutas).
+- **`install.sh`**: comprueba que Timeshift esté instalado y que exista un `EFI/Linux` en alguna vfat, y avisa si los hooks actuales pertenecen a un paquete (su uso deja los ficheros fuera del gestor de paquetes y hace que `pacman -Qkk` los marque como alterados).
+
+### v3.4
 - **`trap cleanup EXIT`** en el restore hook: si el script aborta a mitad (checksum falla, cp falla, signal), el trap restaura el modo RO de la ESP y la desmonta si fue montada manualmente. Evita que la ESP quede montada RW o colgada.
 - **`skip_prune`** en `copy_ukis()`: la segunda llamada (snapshot) omite la purge de obsoletos, evitando I/O innecesario.
-- **ARCHITECTURE.md sincronizado** con el código real.
 
 ### v3.3
 - **`PRUNE_OLD_UKIS` (backup hook)**: cada snapshot viaja **solo con el UKI del sistema actual** (`uname -r`). Con layout `kernel-install` se eliminan del respaldo los `.efi` obsoletos (versiones anteriores y el preset clásico `arch-linux.efi` legacy), evitando que UKIs de kernels viejos se acumulen en las snapshots y sean devueltos a la partición de arranque al restaurar. Configurable con `PRUNE_OLD_UKIS`.
 - **Fix en el restore hook**: la ruta del checksum apuntaba a `"<UKI>".sha256` en lugar de `"<UKI>.efi.sha256"`, por lo que la verificación de integridad y el "salto si idéntico" nunca se ejecutaban. Corregido.
-
-### v3.2
-- **Soporte completo de `kernel-install`**: pruning de UKIs obsoletos en el restore hook (sync ESP ↔ snapshot), esencial con UKIs versionados (`<machine-id>-<kver>.efi`). Configurable con `PRUNE_UKIS`.
-- Documentación del layout `kernel-install` y su integración con pacman.
-
-### v3.1
-- **Fix**: `is_esp_partition()` renombrada a `is_valid_boot_partition()`. Ahora acepta tanto ESP (`c12a7328-...`) como XBOOTLDR (`bc13c2ff-...`). Sistemas con partición XBOOTLDR independiente (dual-boot) ya no son rechazados.
-
-### v3.0
-- **Soporte multi-distribución**: `install.sh` detecta automáticamente el gestor de paquetes (pacman, apt, dnf, zypper, xbps, apk).
-- **Fallback para chroot**: El restore hook detecta entornos chroot sin depender de `systemd-detect-virt`.
-- **Detección robusta de contenedores**: Namespaces PID, `/.dockerenv`, `/proc/1/cgroup`.
-
-### v2.7
-- **Detección de ESP por PARTTYPE**: Verifica GUID `c12a7328-f81f-11d2-ba4b-00a0c93ec93b` para evitar confusión con USBs.
-
-### v2.6
-- **Filtrado de archivos `.bak`**: Limpieza automática de rotaciones viejas.
 
 ---
 

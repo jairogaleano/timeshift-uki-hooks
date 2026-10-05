@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Sintaxis, shellcheck, version y smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sintaxis bash
+        run: |
+          for f in install.sh hooks.d/backup/90-backup-uki hooks.d/restore/90-restore-uki tests/smoke.sh; do
+            bash -n "$f" && echo "ok: $f"
+          done
+
+      - name: ShellCheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck -S warning install.sh hooks.d/backup/90-backup-uki \
+                                      hooks.d/restore/90-restore-uki tests/smoke.sh
+
+      # La version se declaraba a mano en varios ficheros y ya habia derivado
+      # (el titulo del README se quedo en v3.2 mientras el codigo iba en v3.4).
+      # VERSION es la unica fuente de verdad.
+      - name: Coherencia de version
+        run: |
+          set -euo pipefail
+          v="$(cat VERSION)"
+          echo "VERSION=$v"
+          grep -q "Backup Script (v${v})"  hooks.d/backup/90-backup-uki
+          grep -q "Restore Script (v${v})" hooks.d/restore/90-restore-uki
+          grep -q "Instalador v${v}"        install.sh
+          grep -q "^# Timeshift UKI Hooks v${v}$" README.md
+          grep -q "^## \[${v}\]"            CHANGELOG.md
+          echo "Coherente en VERSION, ambos hooks, install.sh, README y CHANGELOG"
+
+      - name: Smoke test del backup hook
+        run: ./tests/smoke.sh
+
+      # El restore hook necesita una ESP real montada, asi que aqui solo se
+      # comprueba que es bash valido (ya cubierto arriba con bash -n).
+      - name: Nota sobre cobertura
+        run: echo "El restore hook se valida con bash -n + shellcheck; su logica exige una ESP montada y no se cubre automaticamente."

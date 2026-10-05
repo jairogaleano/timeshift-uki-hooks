@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Restore Script (v3.4)
+# Timeshift UKI Hooks - Restore Script (v3.5)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -26,9 +26,14 @@
 
 set -euo pipefail
 
-BACKUP_DIR="/etc/timeshift/uki-backup"
-LOG_FILE="/var/log/timeshift.log"
-MIN_ESP_SPACE_MB=50
+BACKUP_DIR="${TSUKI_BACKUP_DIR:-/etc/timeshift/uki-backup}"
+LOG_FILE="${TSUKI_LOG_FILE:-/var/log/timeshift.log}"
+# Margen libre que se quiere dejar en la ESP tras restaurar. El umbral total se
+# calcula en tiempo de ejecucion como ESP_MIN_FREE_MB + el tamano de los UKIs a
+# restaurar: hasta v3.4 era un valor fijo (50 MB) menor que un unico UKI tipico
+# (~75 MB), por lo que el aviso de "poco espacio" no podia dispararse cuando
+# realmente no cabia.
+ESP_MIN_FREE_MB=20
 # Elimina de la particion de arranque los UKIs que no estan en el snapshot
 # restaurado (sync ESP <-> snapshot). Esencial con layout kernel-install,
 # donde conviven multiples UKIs versionados (<machine-id>-<kver>.efi).
@@ -61,7 +66,6 @@ log "INFO" "Iniciando restauracion de UKIs"
 
 WAS_RO=false
 TARGET_MNT=""
-IN_CHROOT=false
 ESP_MOUNTED_BY_US=false
 RESTORE_STARTED=false
 
@@ -103,8 +107,9 @@ detect_chroot() {
 }
 
 if detect_chroot; then
-    IN_CHROOT=true
-    log "INFO" "Entorno chroot detectado. Ajustando rutas de montaje."
+    # No hace falta ajustar rutas: /boot, /efi y /boot/efi ya se resuelven
+    # dentro del chroot, que es donde el usuario ha montado la ESP.
+    log "INFO" "Entorno chroot detectado. Las rutas de la ESP se resuelven dentro del chroot."
 fi
 
 # 1. Resolver el punto de montaje de la particion de arranque
@@ -190,11 +195,18 @@ fi
 # 5. Verificar espacio disponible en ESP
 esp_avail_kb=$(df --output=avail "$TARGET_MNT" 2>/dev/null | tail -1)
 esp_avail_mb=$((esp_avail_kb / 1024)) 2>/dev/null || esp_avail_mb=0
-if [ "$esp_avail_mb" -lt "$MIN_ESP_SPACE_MB" ] && [ "$esp_avail_mb" -gt 0 ]; then
-    log "WARN" "Poco espacio disponible en ESP: ${esp_avail_mb}MB (minimo recomendado: ${MIN_ESP_SPACE_MB}MB)"
+esp_needed_mb=0
+for uki_size in "${backup_ukis[@]}"; do
+    [ -f "$uki_size" ] || continue
+    uki_bytes=$(stat -c %s "$uki_size" 2>/dev/null || echo 0)
+    esp_needed_mb=$((esp_needed_mb + (uki_bytes + 1048575) / 1048576))
+done
+required_mb=$((esp_needed_mb + ESP_MIN_FREE_MB))
+if [ "$esp_avail_mb" -lt "$required_mb" ] && [ "$esp_avail_mb" -gt 0 ]; then
+    log "WARN" "Poco espacio disponible en ESP: ${esp_avail_mb}MB (necesarios ~${required_mb}MB: ${esp_needed_mb}MB de UKIs + ${ESP_MIN_FREE_MB}MB de margen)"
     log "WARN" "Continuando de todas formas..."
 elif [ "$esp_avail_mb" -gt 0 ]; then
-    log "INFO" "Espacio disponible en ESP: ${esp_avail_mb}MB"
+    log "INFO" "Espacio disponible en ESP: ${esp_avail_mb}MB (necesarios ~${required_mb}MB)"
 fi
 
 # 6. Limpiar archivos .sha256 huerfanos en respaldo
