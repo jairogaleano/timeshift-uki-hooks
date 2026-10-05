@@ -67,6 +67,7 @@ Por cada UKI respaldado verifica su checksum SHA256 contra el `.sha256` acompana
 | **ESP montada RO** | Detecta `findmnt -O ro`, remonta RW, restaura; el trap EXIT devuelve a RO. |
 | **Layout kernel-install** (`layout=uki`, v3.2) | El backup captura **solo el UKI del kernel en ejecucion** (`EFI/Linux/<machine-id>-<kver>.efi` con `kver == uname -r`, v3.3) y purga de la ESP los de kernels ya desinstalados (v3.5). El restore copia los del snapshot y **elimina los obsoletos** (los que no estan en el respaldo), dejando la ESP identica al snapshot. |
 | **Restauracion de un snapshot viejo** | Si en la ESP habia UKIs de kernels mas nuevos (cuyos modulos ya no existen en el root restaurado), el prune los elimina. Evita el fallo "unknown filesystem type" en boot. |
+| ⚠️ **Dos vfat montadas, solo una con UKIs (dual-boot)** | **Limitacion conocida.** `resolve_esp_mount()` devuelve el primer mountpoint de `/boot`, `/efi`, `/boot/efi` **sin** validar que tenga `EFI/Linux` ni que sea ESP/XBOOTLDR (el fallback si valida). Si la particion correcta no esta montada, cae en la otra vfat y, como el destino se crea con `mkdir -p`, **escribe los UKIs ahi**; con `PRUNE_UKIS=true` borra ademas los `.efi` que no esten en el respaldo. Afecta sobre todo al chroot desde Live USB. Detallado en el README. |
 
 ---
 
@@ -83,8 +84,8 @@ detect_chroot()  [v3.0: fallback sin systemd-detect-virt]
        |
        v
 resolve_esp_mount()
-  +- ?/boot montado?   -> si -> TARGET_MNT=/boot
-  +- ?/efi montado?    -> si -> TARGET_MNT=/efi
+  +- ?/boot montado?   -> si -> TARGET_MNT=/boot   [⚠️ SIN validar: no comprueba
+  +- ?/efi montado?    -> si -> TARGET_MNT=/efi       EFI/Linux ni PARTTYPE aqui]
   +- ?findmnt vfat?    -> si -> is_valid_boot_partition()? -> si -> TARGET_MNT=resultado
   +- NO -> intenta montar /boot /efi /boot/efi
              |

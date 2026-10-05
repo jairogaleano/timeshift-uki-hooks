@@ -13,6 +13,7 @@ Sistema de hooks para **Timeshift** que respalda y restaura imágenes **UKI (Uni
 - [Integración con pacman](#integración-con-pacman-timeshift-autosnap)
 - [Soporte de kernel-install](#soporte-de-kernel-install)
 - [Configuración](#configuración)
+- [Detección de la partición de arranque](#-detección-de-la-partición-de-arranque)
 - [Seguridad](#seguridad)
 - [Depuración e Integración de Logs](#depuración-e-integración-de-logs)
 - [Desarrollo y CI](#desarrollo-y-ci)
@@ -312,6 +313,49 @@ Variables de entorno (para pruebas; no hace falta tocarlas en producción):
 
 ---
 
+## 📍 Detección de la partición de arranque
+
+Ambos hooks tienen que decidir en qué partición están los UKIs. **No hay variable de configuración para eso**: se detecta sola, y conviene entender cómo, porque no es la misma regla en los dos hooks.
+
+| | Backup hook | Restore hook |
+|---|---|---|
+| Criterio | primer `<mnt>/EFI/Linux` **que exista** | primer `<mnt>` de `/boot`, `/efi`, `/boot/efi` que sea **mountpoint** |
+| Comprueba el tipo de partición (ESP/XBOOTLDR) | solo en el fallback | solo en el fallback |
+| Crea el directorio si falta | no | **sí** (`mkdir -p`) |
+
+### ⚠️ Limitación conocida: el restore hook no valida la partición que elige
+
+El restore hook acepta como válido el **primer punto de montaje** que encuentre, sin comprobar que contenga `EFI/Linux` ni que la partición sea una ESP o XBOOTLDR. En una máquina con **una sola** partición de arranque esto es inofensivo. El problema aparece cuando hay **dos vfat montadas y solo una tiene los UKIs** —el layout habitual en dual-boot:
+
+```
+p1  ESP     c12a7328  → /efi    ← Windows (o el bootloader)
+p5  XBOOTLDR bc13c2ff → /boot   ← los UKIs de Linux aquí
+```
+
+Si `/boot` **no** está montado en el momento de restaurar, el hook cae en `/efi`, que sí es una ESP válida, **crea `/efi/EFI/Linux` con `mkdir -p`** y escribe ahí los UKIs. Los UKIs reales de `/boot` no se restauran, y con `PRUNE_UKIS=true` además borra de esa partición los `.efi` que no estén en el respaldo.
+
+Esto **no** rompe el arranque de Windows (usa `EFI/Microsoft/Boot`), pero deja los UKIs de Linux en la partición equivocada y el sistema puede no arrancar tras restaurar, por mismatch kernel/módulos.
+
+> **El caso más probable es el chroot de un Live USB** (el "peor caso" que describe [ARCHITECTURE.md](ARCHITECTURE.md)): ahí es fácil montar `/efi` por costumbre y olvidar `/boot`.
+
+**Cómo evitarlo:**
+
+```bash
+# 1. Comprobar de antemano qué partición contiene los UKIs
+findmnt -t vfat -o TARGET,SOURCE
+sudo ls -d /boot/EFI/Linux /efi/EFI/Linux 2>&1   # solo debe existir el correcto
+
+# 2. En el chroot, montar SIEMPRE la partición de los UKIs antes de restaurar
+mount /dev/nvme0n1p5 /mnt/arch/boot      # la que tenga EFI/Linux
+mount /dev/nvme0n1p1 /mnt/arch/efi       # la otra, si hace falta
+
+# 3. Montarla en el sitio correcto ANTES de lanzar timeshift restore
+```
+
+**Cómo saber cuál es la correcta en tu máquina:** es la única partición vfat que contenga un directorio `EFI/Linux` con UKIs dentro. Los UKIs en uso son los que tienen el nombre `<machine-id>-<uname -r>.efi` (compruébalo con `uname -r`).
+
+---
+
 ## 🔒 Seguridad
 
 - ✅ **Integridad**: Verificación SHA256 obligatoria antes de restaurar.
@@ -352,6 +396,7 @@ Este proyecto se integra directamente con el sistema de registros de **Timeshift
 | "Checksum falló" | UKI corrupto en respaldo | Verificar integridad del SSD con SMART |
 | "Espacio insuficiente" | ESP casi llena | Con v3.5 el aviso calcula el espacio real que hace falta; si aparece, `PRUNE_ESP_UKIS` ya habrá liberado los UKIs de kernels desinstalados |
 | Hooks no se ejecutan | Permisos incorrectos | `chmod +x /etc/timeshift/*-hooks.d/90-*-uki` |
+| Tras restaurar, el sistema no arranca o el UKI no está donde debería | El restore hook eligió otra vfat montada (dual-boot) | Ver [Detección de la partición de arranque](#-detección-de-la-partición-de-arranque) |
 | El menú de arranque ofrece kernels viejos | UKIs acumulados en la ESP | Con v3.5 se purgan solos en el siguiente snapshot; para hacerlo ya: `rm` manual de `/boot/EFI/Linux/<machine-id>-<kver>.efi` de kernels ya desinstalados |
 
 > Si tu ESP se monta con `dmask=0077` (opción habitual de `systemd-fstab-generator` en vfat), los UKIs quedan en `700` y **solo root puede leerlos**, también dentro de `/etc/timeshift/uki-backup/`. No afecta a los hooks (se ejecutan como root), pero impide comprobarlos a mano con tu usuario normal.

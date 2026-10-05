@@ -24,6 +24,9 @@ Todas las versiones significativas de este proyecto. Formato basado en [Keep a C
 - **Documentacion**: titulo del README sincronizado con la version real (llevaba en `v3.2` con el codigo en `v3.4`), tabla de plataformas ajustada a lo real (Arch probado; el resto "sin probar"), `ARCHITECTURE.md` y README alineados con el comportamiento real de `PRUNE_OLD_UKIS` y de la purga de la ESP, y nueva seccion de Configuracion con todas las variables.
 - Version bump a v3.5 en scripts, `install.sh` y documentacion.
 
+### Documented
+- ⚠️ **Limitacion conocida, preexistente: el restore hook no valida la particion de arranque que elige.** `resolve_esp_mount()` devuelve el primer mountpoint de `/boot`, `/efi`, `/boot/efi` sin comprobar que contenga `EFI/Linux` ni que sea ESP/XBOOTLDR, y como el destino se crea con `mkdir -p`, una mala eleccion deja los UKIs en la particion equivocada (con `PRUNE_UKIS=true` borra ademas los `.efi` que no esten en el respaldo). Se manifiesta solo con **dos vfat montadas y una sola con UKIs** (dual-boot), y sobre todo en el chroot desde Live USB. El backup hook **si** comprueba que el directorio exista, asi que los dos hooks pueden apuntar a particiones distintas. Documentado en el README ("Deteccion de la particion de arranque", con comandos para verificar y evitarlo) y en la tabla de escenarios de `ARCHITECTURE.md`. **No corregido en v3.5** (cambia el criterio de seleccion: habria que exigir `EFI/Linux` o PARTTYPE valido en el camino rapido).
+
 ### Notes
 - El restore hook **no tiene cobertura automatica**: su logica exige una ESP real montada. En CI solo se valida con `bash -n` y ShellCheck.
 - Los UKIs se conservan dentro de cada snapshot, asi que el directorio de respaldo ocupa ~75 MB adicionales por snapshot (Btrfs no deduplica entre subvolumenes).
