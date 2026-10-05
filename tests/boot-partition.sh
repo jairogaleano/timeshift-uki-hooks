@@ -101,26 +101,32 @@ build_chroot() {
     mount --rbind /dev  "$R/dev"
     mount --rbind /sys  "$R/sys"
     mount --rbind /proc "$R/proc"
+    # /etc real, no un /etc minimo: en Debian/Ubuntu binarios como awk son
+    # symlinks via /etc/alternatives (/usr/bin/awk -> /etc/alternatives/awk ->
+    # /usr/bin/mawk), asi que con un /etc de mentira el symlink queda roto y
+    # el chroot pierde el comando. Lo que si hay que neutralizar es fstab, para
+    # que el hook no pueda montar nada real por su cuenta.
+    mount --rbind /etc "$R/etc"
+    : > "$TMP/empty-fstab"
+    mount --bind "$TMP/empty-fstab" "$R/etc/fstab"
     for d in /bin /sbin /lib /lib64 /lib32; do
         [ -e "$d" ] || [ -L "$d" ] || continue
         link_or_bind "$d"
     done
-    cp /etc/machine-id "$R/etc/machine-id"
-    cp /etc/nsswitch.conf "$R/etc/" 2>/dev/null || true
-    # fstab vacio: el hook no debe poder montar nada por su cuenta. Asi el
-    # unico camino valido para el destino es EFI/Linux, nunca un mkdir.
-    : > "$R/etc/fstab"
     cp "$RESTORE_HOOK" "$R/hooks.d/restore/90-restore-uki"
     chmod +x "$R/hooks.d/restore/90-restore-uki"
     # Fallo temprano y legible si el chroot no esta bien montado. Se comprueban
     # TODOS los comandos externos que usan los hooks, no solo algunos: si el
     # chroot se monta mal, quiero un "falta X" claro y no un rc=127 sin
-    # contexto blamed al hook.
+    # contexto blamed al hook. awk ademas se EJECUTA, no solo se localiza:
+    # puede existir como symlink roto a traves de /etc/alternatives, que es
+    # justo lo que pasaba con un /etc de mentira.
     missing=$(chroot "$R" /bin/bash -c '
         for c in awk basename cp date df findmnt head lsblk mkdir mktemp mount \
                  mountpoint mv readlink sha256sum stat tail umount; do
             command -v "$c" >/dev/null 2>&1 || echo "$c"
-        done' 2>/dev/null)
+        done
+        printf x | awk "{print}" >/dev/null 2>&1 || echo "awk (presente pero no se ejecuta)"' 2>/dev/null)
     if [ -n "$missing" ]; then
         echo "FALLO: el chroot no tiene estas utilidades: $(echo $missing)" >&2
         exit 1
