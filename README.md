@@ -40,7 +40,7 @@ Este proyecto sincroniza los UKIs con los snapshots de Btrfs mediante hooks:
    - Timeshift lo ejecuta **después** de crear el snapshot (`run_post_backup_hooks`) y le exporta `TS_SNAPSHOT_PATH`
    - Detecta dinámicamente la ESP (verifica PARTTYPE para evitar USBs)
    - Respalda UKIs en `/etc/timeshift/uki-backup/`
-   - Escribe los UKIs **dentro del snapshot recién creado** vía `TS_SNAPSHOT_PATH` (Btrfs: `@/etc/timeshift/uki-backup/`, rsync: `etc/timeshift/uki-backup/`), dejándolo **autocontenido**
+   - Escribe los UKIs **dentro del snapshot recién creado** vía `TS_SNAPSHOT_PATH` (Btrfs: `@/etc/timeshift/uki-backup/`, rsync: `localhost/etc/timeshift/uki-backup/` — el árbol rsync de Timeshift vive en `<snapshot>/localhost/`), dejándolo **autocontenido**
    - **Selectivo**: solo copia UKIs que cambiaron (comparación SHA256 per-file)
    - **Purga UKIs obsoletos** (`PRUNE_OLD_UKIS=true`): cada snapshot viaja solo con el UKI del kernel actual (`uname -r`); elimina versiones anteriores y el preset clásico `arch-linux.efi` en máquinas con `kernel-install`
    - **Purga la partición de arranque** (`PRUNE_ESP_UKIS=true`, v3.5): elimina los UKIs versionados cuyo kernel ya no está instalado. `kernel-install` **no** poda, así que sin esto `/boot/EFI/Linux` acumula UKIs de kernels desinstalados y cada uno se convierte en una entrada más del menú de arranque de systemd-boot
@@ -61,7 +61,8 @@ Este proyecto sincroniza los UKIs con los snapshots de Btrfs mediante hooks:
 | Distribución | Estado | Notas |
 |-------------|--------|-------|
 | Arch Linux / Manjaro / EndeavourOS | ✅ Verificado en hardware real | Incluye paquete AUR (`timeshift-uki-hooks-git`) |
-| Debian / Ubuntu / Linux Mint / Pop!_OS | ⚠️ Sin verificar | `install.sh` detecta apt e instala dependencias; el resto del proyecto es shell estándar |
+| Debian 13 | 🟡 Verificado en VM (KVM) | Ciclo completo Btrfs snapshot → UKI autocontenido → restore in-system → arranque OK (systemd-boot + `kernel-install`/`EFI/Linux`). ⏳ Quedan Secure Boot firmado y el disparo automático |
+| Ubuntu / Linux Mint / Pop!_OS | ⚠️ Sin verificar | Ídem con apt |
 | Fedora | ⚠️ Sin verificar | Ídem con dnf |
 | openSUSE | ⚠️ Sin verificar | Ídem con zypper |
 | Void Linux | ⚠️ Sin verificar | Ídem con xbps |
@@ -72,7 +73,9 @@ Este proyecto sincroniza los UKIs con los snapshots de Btrfs mediante hooks:
 
 ### Limitación conocida: el soporte multi-distribución no está verificado en hardware real
 
-> ⚠️ **Esta es una limitación abierta, no un problema conocido con solución.** Que `install.sh` sepa manejar seis gestores de paquetes **no demuestra** que los hooks funcionen en esas distribuciones. **Solo Arch Linux se ha probado en una máquina real, de principio a fin**: snapshot → UKIs dentro del snapshot → restauración → arranque correcto. En el resto no se ha ejecutado ni un ciclo completo de backup/restore.
+> ⚠️ **Esta es una limitación abierta, no un problema conocido con solución.** Que `install.sh` sepa manejar seis gestores de paquetes **no demuestra** que los hooks funcionen en esas distribuciones. **Arch Linux se ha probado en una máquina real, de principio a fin** (snapshot → UKIs dentro del snapshot → restauración → arranque correcto) y **Debian 13 en una VM KVM** (ver "Estado de la verificación" al final de esta sección). En el resto no se ha ejecutado ni un ciclo completo de backup/restore.
+
+**Estado de la verificación (2026-10-08) — Debian 13 en VM KVM:** ciclo completo **Btrfs** verificado con Timeshift 26.09 (fork linuxmint) y layout `@`/`@home` + subvolúmenes independientes para `/var/log` y `/var/cache/apt`: snapshot → UKIs escritos dentro del snapshot (`@/etc/timeshift/uki-backup/`) → `timeshift --restore` desde el sistema en marcha → arranque correcto. De las 4 condiciones de abajo, la verificación **cumple la 1 y la 3** (arranque tras restaurar, y `kernel-install` con layout `EFI/Linux` en Debian 13 + systemd-boot). Siguen **abiertas la 2 y la 4**: fuera de Arch no hay disparo automático documentado (los hooks solo corren con `timeshift --create/--restore` manuales) y el UKI restaurado no se ha probado firmado con las claves de Secure Boot de la máquina (el OVMF de la VM no enrula esas claves). Esta verificación además **encontró dos bugs reales**, ya corregidos en este repo (ver CHANGELOG): el restore hook cogía los UKIs del sistema vivo en vez del snapshot en el restore Btrfs in-system, y el backup hook no reconocía el layout rsync de Timeshift.
 
 Para levantar esta limitación, una distribución debe cumplir **las cuatro** condiciones:
 

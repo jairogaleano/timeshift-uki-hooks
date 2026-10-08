@@ -400,9 +400,9 @@ if [ -n "${TS_SNAPSHOT_PATH:-}" ]; then
     # Layout Btrfs: el snapshot contiene los subvolumenes @ y @home
     if [ -d "$TS_SNAPSHOT_PATH/@/etc" ]; then
         SNAPSHOT_BACKUP_DIR="$TS_SNAPSHOT_PATH/@/etc/timeshift/uki-backup"
-    # Layout rsync: el snapshot contiene el arbol de archivos directamente
-    elif [ -d "$TS_SNAPSHOT_PATH/etc" ]; then
-        SNAPSHOT_BACKUP_DIR="$TS_SNAPSHOT_PATH/etc/timeshift/uki-backup"
+    # Layout rsync: Timeshift guarda el arbol del sistema en <snapshot>/localhost/
+    elif [ -d "$TS_SNAPSHOT_PATH/localhost/etc" ]; then
+        SNAPSHOT_BACKUP_DIR="$TS_SNAPSHOT_PATH/localhost/etc/timeshift/uki-backup"
     else
         log "WARN" "TS_SNAPSHOT_PATH no contiene un sistema reconocible; el snapshot no quedara autocontenido"
     fi

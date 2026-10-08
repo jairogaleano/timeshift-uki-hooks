@@ -26,7 +26,9 @@
 
 set -euo pipefail
 
-BACKUP_DIR="${TSUKI_BACKUP_DIR:-/etc/timeshift/uki-backup}"
+# Directorio de respaldo de UKIs. Se resuelve mas abajo (ver nota de TS_SNAPSHOT_PATH),
+# porque en el restore Btrfs el respaldo correcto NO es el del sistema vivo.
+BACKUP_DIR=""
 LOG_FILE="${TSUKI_LOG_FILE:-/var/log/timeshift.log}"
 # Margen libre que se quiere dejar en la ESP tras restaurar. El umbral total se
 # calcula en tiempo de ejecucion como ESP_MIN_FREE_MB + el tamano de los UKIs a
@@ -47,6 +49,27 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [UKI Restore Hook] [$level] $message"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [UKI Restore Hook] [$level] $message" >> "$LOG_FILE" 2>/dev/null || true
 }
+
+# --- Resolucion del directorio de respaldo de UKIs ---
+# Restore Btrfs in-system: Timeshift NO chrootea; ejecuta este hook en el sistema
+# vivo (el root que se descarta al reiniciar) y exporta TS_SNAPSHOT_PATH con la
+# ruta del snapshot que se restaura. Si leyeramos /etc/timeshift/uki-backup
+# tomaramos los UKIs del estado ACTUAL (el que desaparece), no los del snapshot
+# restaurado: tras un cambio de kernel la ESP quedaria con el UKI nuevo y el root
+# restaurado (viejo) no arrancaria. Por eso, cuando TS_SNAPSHOT_PATH apunta a un
+# sistema, se usa el respaldo que viaja DENTRO del snapshot (autocontenido).
+#
+# Restore rsync (chroot sobre el arbol restaurado) y ejecucion manual: no hay
+# TS_SNAPSHOT_PATH, asi que se usa /etc/timeshift/uki-backup, que en el chroot ya
+# es el del snapshot que se restaura.
+if [ -z "${TSUKI_BACKUP_DIR:-}" ] && [ -n "${TS_SNAPSHOT_PATH:-}" ] && [ -d "$TS_SNAPSHOT_PATH" ]; then
+    if [ -d "$TS_SNAPSHOT_PATH/@/etc" ]; then
+        BACKUP_DIR="$TS_SNAPSHOT_PATH/@/etc/timeshift/uki-backup"
+    elif [ -d "$TS_SNAPSHOT_PATH/localhost/etc" ]; then
+        BACKUP_DIR="$TS_SNAPSHOT_PATH/localhost/etc/timeshift/uki-backup"
+    fi
+fi
+BACKUP_DIR="${TSUKI_BACKUP_DIR:-${BACKUP_DIR:-/etc/timeshift/uki-backup}}"
 
 # Verificar si un punto de montaje corresponde a una particion de arranque valida
 # (ESP o XBOOTLDR) para evitar confusion con USBs
