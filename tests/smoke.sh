@@ -34,10 +34,10 @@ assert_log() { grep -qF "$1" "$LOG" || fail "el log no contiene: $1"; }
 ESP="$TMP/esp/EFI/Linux"
 BACKUP="$TMP/backup"
 LOG="$TMP/timeshift.log"
-SNAP_BTRFS="$TMP/snap-btrfs/@"   # layout Btrfs: <snap>/@/etc/...
-SNAP_RSYNC="$TMP/snap-rsync"     # layout rsync: <snap>/etc/...
+SNAP_BTRFS="$TMP/snap-btrfs"     # layout Btrfs: <snap>/@/etc/... (TS_SNAPSHOT_PATH = raiz del snapshot)
+SNAP_RSYNC="$TMP/snap-rsync"     # layout rsync: <snap>/localhost/etc/...
 
-mkdir -p "$ESP" "$BACKUP" "$SNAP_BTRFS/etc" "$SNAP_RSYNC/etc"
+mkdir -p "$ESP" "$BACKUP" "$SNAP_BTRFS/@/etc" "$SNAP_RSYNC/localhost/etc"
 : > "$LOG"
 
 printf 'UKI-CURRENT' > "$ESP/${MID}-${KVER_CUR}.efi"
@@ -82,7 +82,7 @@ expected_sha="$(printf 'UKI-CURRENT' | sha256sum | awk '{print $1}')"
     || fail "el .sha256 no coincide con el UKI copiado"
 
 echo "[3/5] snapshot autocontenido (layout Btrfs: <snap>/@/etc/...)"
-SNAP_BACKUP="$SNAP_BTRFS/etc/timeshift/uki-backup"
+SNAP_BACKUP="$SNAP_BTRFS/@/etc/timeshift/uki-backup"
 assert_file "$SNAP_BACKUP/${CUR_EFI}"
 assert_file "$SNAP_BACKUP/${CUR_EFI}.sha256"
 
@@ -101,10 +101,10 @@ fi
 # --- Layout rsync: los UKIs tambien se escriben dentro del snapshot --------
 
 rm -rf "$SNAP_RSYNC"
-mkdir -p "$SNAP_RSYNC/etc"
+mkdir -p "$SNAP_RSYNC/localhost/etc"
 run_backup "$SNAP_RSYNC"
-echo "[5/5] snapshot autocontenido (layout rsync: <snap>/etc/...)"
-assert_file "$SNAP_RSYNC/etc/timeshift/uki-backup/${CUR_EFI}"
+echo "[5/5] snapshot autocontenido (layout rsync: <snap>/localhost/etc/...)"
+assert_file "$SNAP_RSYNC/localhost/etc/timeshift/uki-backup/${CUR_EFI}"
 
 # --- El restore hook al menos tiene que ser bash valido --------------------
 
