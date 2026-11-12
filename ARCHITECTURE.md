@@ -21,7 +21,7 @@ Timeshift ejecuta los backup hooks **despues** de crear el snapshot (`run_post_b
 1. `/etc/timeshift/uki-backup/` — sistema vivo (fallback/consulta rapida).
 2. `$TS_SNAPSHOT_PATH/.../uki-backup/` — **dentro del snapshot recien creado**, dejandolo autocontenido:
    - Layout Btrfs: `$TS_SNAPSHOT_PATH/@/etc/timeshift/uki-backup/`.
-   - Layout rsync: `$TS_SNAPSHOT_PATH/etc/timeshift/uki-backup/`.
+   - Layout rsync: `$TS_SNAPSHOT_PATH/localhost/etc/timeshift/uki-backup/` (el arbol rsync de Timeshift vive en `<snapshot>/localhost/`).
 
 Esto garantiza que cada snapshot viaje con los UKIs que coinciden con sus modulos del kernel, sin depender del snapshot anterior.
 
