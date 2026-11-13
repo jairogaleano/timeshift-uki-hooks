@@ -5,6 +5,8 @@ src/
 pkg/
 timeshift-uki-hooks-git/
 .srcdist/
+# Clon de la fuente git que deja makepkg en SRCDEST (aur/timeshift-uki-hooks)
+/aur/timeshift-uki-hooks/
 
 # UKIs y sus checksums (nunca deben acabar en el repo)
 *.efi
