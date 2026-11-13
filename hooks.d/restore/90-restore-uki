@@ -62,12 +62,26 @@ log() {
 # Restore rsync (chroot sobre el arbol restaurado) y ejecucion manual: no hay
 # TS_SNAPSHOT_PATH, asi que se usa /etc/timeshift/uki-backup, que en el chroot ya
 # es el del snapshot que se restaura.
-if [ -z "${TSUKI_BACKUP_DIR:-}" ] && [ -n "${TS_SNAPSHOT_PATH:-}" ] && [ -d "$TS_SNAPSHOT_PATH" ]; then
+#
+# Si TS_SNAPSHOT_PATH viene definido pero no contiene un sistema reconocible, se
+# ABORTA: caer a /etc/timeshift/uki-backup seria restaurar el respaldo del
+# sistema vivo, que es exactamente el bug que se corrige aqui. Es preferible no
+# tocar la particion de arranque a restaurar UKIs que no corresponden.
+ROOT=""
+if [ -z "${TSUKI_BACKUP_DIR:-}" ] && [ -n "${TS_SNAPSHOT_PATH:-}" ]; then
     if [ -d "$TS_SNAPSHOT_PATH/@/etc" ]; then
-        BACKUP_DIR="$TS_SNAPSHOT_PATH/@/etc/timeshift/uki-backup"
+        ROOT="$TS_SNAPSHOT_PATH/@"
     elif [ -d "$TS_SNAPSHOT_PATH/localhost/etc" ]; then
-        BACKUP_DIR="$TS_SNAPSHOT_PATH/localhost/etc/timeshift/uki-backup"
+        ROOT="$TS_SNAPSHOT_PATH/localhost"
+    else
+        log "ERROR" "TS_SNAPSHOT_PATH=\"$TS_SNAPSHOT_PATH\" no contiene un sistema reconocible (ni @/etc ni localhost/etc)."
+        log "ERROR" "No se restaura ningun UKI: /etc/timeshift/uki-backup seria el respaldo del sistema VIVO, no el del snapshot."
+        log "ERROR" "Comprueba que la ruta del snapshot es correcta o restaura desde el propio snapshot (chroot)."
+        exit 1
     fi
+fi
+if [ -n "$ROOT" ]; then
+    BACKUP_DIR="$ROOT/etc/timeshift/uki-backup"
 fi
 BACKUP_DIR="${TSUKI_BACKUP_DIR:-${BACKUP_DIR:-/etc/timeshift/uki-backup}}"
 
@@ -89,22 +103,28 @@ log "INFO" "Iniciando restauracion de UKIs"
 
 WAS_RO=false
 TARGET_MNT=""
-ESP_MOUNTED_BY_US=false
-RESTORE_STARTED=false
+# Puntos de montaje que ha montado ESTE script (los del fallback de abajo). Se
+# guardan todos para desmontarlos al salir; antes solo habia un booleano y el
+# cleanup ni siquiera corria si se abortaba antes de RESTORE_STARTED=true, asi
+# que un mount manual podia quedar colgado tras un fallo.
+MOUNTED_BY_US=()
 
 # Cleanup seguro al salir (exit, error, o signal). Previene que la ESP quede
 # montada RW o que un mount manual quede colgado si el script aborta a mitad.
 cleanup() {
-    if [ "$RESTORE_STARTED" != "true" ]; then
-        return 0
-    fi
+    # Remontar a ro solo tiene sentido si este script llego a remontar a rw.
     if [ "$WAS_RO" = true ] && [ -n "$TARGET_MNT" ]; then
         log "INFO" "[cleanup] Restaurando $TARGET_MNT a modo SOLO LECTURA..."
         mount -o remount,ro "$TARGET_MNT" 2>/dev/null || true
     fi
-    if [ "$ESP_MOUNTED_BY_US" = true ] && [ -n "$TARGET_MNT" ]; then
-        log "INFO" "[cleanup] Desmontando $TARGET_MNT (montado por este script)..."
-        umount "$TARGET_MNT" 2>/dev/null || true
+    # Desmontar SIEMPRE lo montado por el script, aunque se aborte antes de
+    # empezar a restaurar: si no, un fallo posterior dejaria montajes vivos.
+    local mnt
+    if [ ${#MOUNTED_BY_US[@]} -gt 0 ]; then
+        for mnt in "${MOUNTED_BY_US[@]}"; do
+            log "INFO" "[cleanup] Desmontando $mnt (montado por este script)..."
+            umount "$mnt" 2>/dev/null || true
+        done
     fi
 }
 trap cleanup EXIT
@@ -195,6 +215,7 @@ if ! TARGET_MNT=$(resolve_esp_mount); then
                 log "INFO" "Intentando montar $mnt..."
                 if mount "$mnt" 2>/dev/null; then
                     log "INFO" "$mnt montado exitosamente."
+                    MOUNTED_BY_US+=("$mnt")
                 fi
             fi
         fi
@@ -215,7 +236,6 @@ if [ -z "$TARGET_MNT" ]; then
 fi
 
 log "INFO" "Particion de arranque (UKIs) en: $TARGET_MNT"
-RESTORE_STARTED=true
 
 # Comprobar si esta montado en modo solo lectura (ro)
 if findmnt -O ro "$TARGET_MNT" >/dev/null 2>&1; then

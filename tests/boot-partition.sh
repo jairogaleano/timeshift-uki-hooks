@@ -52,6 +52,12 @@ MID="$(cat /etc/machine-id)"
 KVER="$(uname -r)"
 CUR_EFI="${MID}-${KVER}.efi"
 
+# El smoke test llama a este script con TSUKI_* exportadas: aqui se neutralizan
+# para que cada caso controle su propio entorno (el caso L necesita que
+# TSUKI_BACKUP_DIR NO venga definida, porque es el override manual que gana a
+# TS_SNAPSHOT_PATH).
+unset TSUKI_UKI_DIR TSUKI_BACKUP_DIR TSUKI_LOG_FILE TS_SNAPSHOT_PATH
+
 TMP="$(mktemp -d)"
 R="$TMP/root"
 LOG="$R/tmp/restore.log"
@@ -181,6 +187,19 @@ run_restore() {
     set -e
 }
 
+# Variante para probar la resolucion de TS_SNAPSHOT_PATH: sin TSUKI_BACKUP_DIR
+# (que tiene prioridad como override manual) para que el hook tenga que decidir.
+run_restore_snap() {
+    : > "$LOG"
+    : > "$ERR"
+    set +e
+    chroot "$R" /bin/bash -c \
+        "TS_SNAPSHOT_PATH=$1 TSUKI_LOG_FILE=/tmp/restore.log /hooks.d/restore/90-restore-uki" \
+        >"$ERR" 2>&1
+    echo $?
+    set -e
+}
+
 # El UKI de respaldo. El formato del .sha256 es el que escribe el backup hook
 # (hash pelado, sin nombre); el formato `sha256sum` se prueba aparte en el
 # caso F.
@@ -304,7 +323,7 @@ echo "  J: UKI sin version (rescue.efi)      -> se conserva, no se poda"
 
 # --- K: lista grande en el respaldo -> el prune no borra UKIs vigentes ------
 # El prune del restore usaba el mismo idioma `printf | grep -qx` que el del
-# backup (ver tests/smoke.sh, caso [6/6]): con `set -o pipefail`, si el volcado
+# backup (ver tests/smoke.sh, caso [6/7]): con `set -o pipefail`, si el volcado
 # supera el buffer de tuberia (64 KiB) grep sale en la primera coincidencia,
 # printf muere por SIGPIPE y el `!` lo lee como "no esta en el snapshot" ->
 # borra UKIs que debia conservar. Aqui el prune recorre el DESTINO, asi que el
@@ -333,4 +352,20 @@ fi
     || fail "caso K: desaparecio el UKI vigente"
 echo "  K: lista grande en el respaldo       -> no se poda ninguno (SIGPIPE)"
 
-echo "  OK: 11/11 casos"
+# --- L: TS_SNAPSHOT_PATH no reconocido -> ABORTA, no usa el respaldo vivo ---
+# En el restore Btrfs in-system, TS_SNAPSHOT_PATH tiene que contener @/etc
+# (Btrfs) o localhost/etc (rsync). Si apunta a otra cosa, caer a
+# /etc/timeshift/uki-backup restauraria el respaldo del sistema VIVO, que es
+# justo el bug que se corrige: el root restaurado es el viejo y el UKI seria el
+# nuevo. Antes se hacia fallback en silencio; ahora se aborta.
+setup boot boot
+rc=$(run_restore_snap /snapshot-ajeno)
+[ "$rc" -ne 0 ] || fail "caso L: deberia abortar con TS_SNAPSHOT_PATH no reconocido"
+grep -q "no contiene un sistema reconocible" "$LOG" \
+    || fail "caso L: no explico por que aborta"
+if grep -q "EXITO" "$LOG"; then
+    fail "caso L: restauro UKIs con un TS_SNAPSHOT_PATH no reconocido"
+fi
+echo "  L: TS_SNAPSHOT_PATH no reconocido    -> ABORTA, sin fallback al sistema vivo"
+
+echo "  OK: 12/12 casos"

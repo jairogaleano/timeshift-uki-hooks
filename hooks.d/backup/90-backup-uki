@@ -209,7 +209,12 @@ prune_esp_stale_ukis() {
         return 0
     fi
 
+    # Dos fases: primero se decide QUE se podaria y solo despues se borra. La
+    # guarda de supervivientes necesita el calculo completo antes de tocar
+    # ningun fichero.
     local base kver pruned=0
+    local -A stale=()
+    local -a to_prune=()
     for uki in "${esp_ukis[@]}"; do
         base="${uki##*/}"
         [[ "$base" =~ ^[0-9a-f]{32}-(.+)\.efi$ ]] || continue
@@ -217,6 +222,34 @@ prune_esp_stale_ukis() {
         if kernel_is_installed "$kver"; then
             continue
         fi
+        stale["$base"]="$kver"
+        to_prune+=("$uki")
+    done
+    if [ ${#to_prune[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    # Guarda conservadora: si el borrado dejaria la particion SIN ningun UKI
+    # versionado, lo mas probable es que el diagnostico sea erroneo (chroot de
+    # Live USB: el kernel en ejecucion es el del USB y no coincide con ningun
+    # UKI de la ESP; /usr/lib/modules vacio o sin montar). En ese caso no se
+    # poda nada: es preferible dejar UKIs obsoletos a quedarse sin arranque.
+    local survivors=0
+    for uki in "${esp_ukis[@]}"; do
+        base="${uki##*/}"
+        [[ "$base" =~ ^[0-9a-f]{32}-.+\.efi$ ]] || continue
+        if [ -z "${stale[$base]+x}" ]; then
+            survivors=$((survivors + 1))
+        fi
+    done
+    if [ "$survivors" -eq 0 ]; then
+        log "WARN" "La purga dejaria $UKI_DIR sin ningun UKI versionado; no se poda nada (¿kernel en ejecucion ajeno al sistema o /usr/lib/modules sin montar?)"
+        return 0
+    fi
+
+    for uki in "${to_prune[@]}"; do
+        base="${uki##*/}"
+        kver="${stale[$base]}"
         if rm -f "$uki"; then
             log "INFO" "Pruned UKI de la particion de arranque (kernel $kver no instalado): $base"
             pruned=$((pruned + 1))
