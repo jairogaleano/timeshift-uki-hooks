@@ -285,4 +285,52 @@ grep -q "Checksum fallo para $CUR_EFI" "$LOG" \
     || fail "caso I: no reporto el fallo de checksum"
 echo "  I: .sha256 corrupto                  -> ABORTA en vez de restaurar basura"
 
-echo "  OK: 9/9 casos (6 de particion de arranque + 3 de checksum)"
+# --- J: UKI sin version en el nombre NO se poda ----------------------------
+# El prune solo debe tocar nombres versionados (<machine-id>-<kver>.efi). Un
+# fichero como rescue.efi o arch-linux.efi no permite decidir a que kernel
+# pertenece, asi que borrarlo podria dejar el sistema sin una entrada de
+# arranque que el snapshot no contiene por diseno.
+setup boot boot
+# El caso I dejo el .sha256 corrupto; se restaura el bueno para poder restaurar
+printf '%s\n' "$bare_sha" > "$R/backup/$CUR_EFI.sha256"
+printf 'RESCUE' > "$TMP/src-boot/EFI/Linux/rescue.efi"
+rc=$(run_restore)
+[ "$rc" -eq 0 ] || fail "caso J: se esperaba exito, rc=$rc"
+[ -f "$TMP/src-boot/EFI/Linux/rescue.efi" ] \
+    || fail "caso J: podo un UKI sin version en el nombre"
+grep -q "Se conserva UKI sin version en el nombre: rescue.efi" "$LOG" \
+    || fail "caso J: no logueo la conservacion de rescue.efi"
+echo "  J: UKI sin version (rescue.efi)      -> se conserva, no se poda"
+
+# --- K: lista grande en el respaldo -> el prune no borra UKIs vigentes ------
+# El prune del restore usaba el mismo idioma `printf | grep -qx` que el del
+# backup (ver tests/smoke.sh, caso [6/6]): con `set -o pipefail`, si el volcado
+# supera el buffer de tuberia (64 KiB) grep sale en la primera coincidencia,
+# printf muere por SIGPIPE y el `!` lo lee como "no esta en el snapshot" ->
+# borra UKIs que debia conservar. Aqui el prune recorre el DESTINO, asi que el
+# destino tiene que estar ya poblado. Para pasar de 64 KiB con pocos ficheros
+# se usan nombres largos (242 B): el bug depende de los BYTES que se escriben
+# a la tuberia, no del numero de UKIs, y asi el caso cuesta ~1 s en vez de
+# copiar 1400 ficheros.
+setup boot boot
+BIG_N=320
+big_pad="$(printf '%0190d' 0)"
+big_sha="$(printf 'UKI-BIG' | sha256sum | awk '{print $1}')"
+for i in $(seq 1 "$BIG_N"); do
+    printf -v big_efi 'f%031x-%s-%s.efi' "$i" "$big_pad" "$KVER"
+    printf 'UKI-BIG' > "$TMP/src-boot/EFI/Linux/$big_efi"
+    printf 'UKI-BIG' > "$R/backup/$big_efi"
+    # El destino ya tiene el mismo contenido: con el checksum correcto el hook
+    # salta la copia, que es lo unico lento de este caso.
+    printf '%s\n' "$big_sha" > "$R/backup/$big_efi.sha256"
+done
+rc=$(run_restore)
+[ "$rc" -eq 0 ] || fail "caso K: se esperaba exito, rc=$rc"
+if grep -q "Pruned UKI obsoleto" "$LOG"; then
+    fail "caso K: podo UKIs que estaban en el snapshot (¿SIGPIPE en la tuberia?)"
+fi
+[ -f "$TMP/src-boot/EFI/Linux/$CUR_EFI" ] \
+    || fail "caso K: desaparecio el UKI vigente"
+echo "  K: lista grande en el respaldo       -> no se poda ninguno (SIGPIPE)"
+
+echo "  OK: 11/11 casos"

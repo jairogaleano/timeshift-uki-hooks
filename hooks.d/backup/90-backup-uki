@@ -232,8 +232,26 @@ prune_esp_stale_ukis() {
 }
 
 # Purga en el destino los UKIs que ya no estan en el conjunto vigente
+# La pertenencia se resuelve con un array asociativo en bash puro: con
+# `printf ... | grep -qx` la tuberia puede morir por SIGPIPE (grep sale al
+# primer match mientras printf sigue escribiendo), y con `set -o pipefail` ese
+# 141 se propaga como fallo de la tuberia -> el `!` lo convierte en "no esta en
+# el conjunto" y el hook BORRA un UKI que debia conservar. Con listas grandes
+# (varios kernels + muchas entradas) la carrera se dispara.
 prune_stale_ukis() {
     local dest="$1"
+
+    if [ ${#current_uki_names[@]} -eq 0 ]; then
+        log "WARN" "Sin conjunto vigente de UKIs; no se purga nada en $dest"
+        return 0
+    fi
+
+    local -A keep=()
+    local name
+    for name in "${current_uki_names[@]}"; do
+        keep["$name"]=1
+    done
+
     shopt -s nullglob
     for existing in "$dest"/*.efi; do
         [ -f "$existing" ] || continue
@@ -242,7 +260,7 @@ prune_stale_ukis() {
         # Rotaciones viejas (.bak) se limpian por separado
         [[ "$base" == *".bak."* || "$base" == *".bak.efi" ]] && continue
 
-        if ! printf '%s\n' "${current_uki_names[@]}" | grep -qx -- "$base"; then
+        if [ -z "${keep[$base]+x}" ]; then
             rm -f "$existing" "${existing%.efi}.efi.sha256"
             log "INFO" "Pruned UKI obsoleto (no corresponde al kernel actual): $base"
         fi

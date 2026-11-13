@@ -373,6 +373,26 @@ if [ "$PRUNE_UKIS" = true ]; then
         backup_names+=("${uki_backup##*/}")
     done
 
+    # Solo tiene sentido podar los UKIs versionados si el snapshot trae alguno.
+    # Si el snapshot es de un layout clasico (arch-linux.efi) no se debe borrar
+    # un versionado ajeno: mismo criterio que compute_current_ukis del backup.
+    has_versioned_backup=false
+    for backup_name in "${backup_names[@]}"; do
+        [[ "$backup_name" =~ ^[0-9a-f]{32}-.+\.efi$ ]] && has_versioned_backup=true
+    done
+
+    # Pertenencia en bash puro: con `printf ... | grep -qx` la tuberia puede
+    # morir por SIGPIPE (grep sale al primer match mientras printf sigue
+    # escribiendo) y con `set -o pipefail` ese 141 se propaga como fallo de la
+    # tuberia -> el `!` lo convierte en "no esta en el snapshot" y el hook BORRA
+    # un UKI que debia conservar. Con listas grandes la carrera se dispara.
+    declare -A keep=()
+    if [ ${#backup_names[@]} -gt 0 ]; then
+        for backup_name in "${backup_names[@]}"; do
+            keep["$backup_name"]=1
+        done
+    fi
+
     shopt -s nullglob
     for existing in "$UKI_DIR"/*.efi; do
         [ -f "$existing" ] || continue
@@ -386,8 +406,22 @@ if [ "$PRUNE_UKIS" = true ]; then
             continue
         fi
 
-        # Eliminar UKIs que no estan en el snapshot respaldado
-        if ! printf '%s\n' "${backup_names[@]}" | grep -qx -- "$base"; then
+        # Solo se podan nombres versionados (<machine-id>-<kver>.efi), el unico
+        # layout que gestiona kernel-install. Cualquier otro .efi (arch-linux.efi,
+        # rescue.efi, etc.) se conserva: borrarlo podria dejar el sistema sin una
+        # entrada de arranque que el snapshot no contiene por diseno.
+        if [[ ! "$base" =~ ^[0-9a-f]{32}-.+\.efi$ ]]; then
+            log "INFO" "Se conserva UKI sin version en el nombre: $base"
+            continue
+        fi
+
+        if [ "$has_versioned_backup" != true ]; then
+            log "WARN" "El snapshot no trae UKIs versionados; se conserva $base"
+            continue
+        fi
+
+        # Eliminar UKIs versionados que no estan en el snapshot respaldado
+        if [ -z "${keep[$base]+x}" ]; then
             rm -f "$existing"
             log "INFO" "Pruned UKI obsoleto (no existe en el snapshot): $base"
             pruned_count=$((pruned_count + 1))
