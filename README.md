@@ -1,4 +1,4 @@
-# Timeshift UKI Hooks v3.6
+# Timeshift UKI Hooks v3.7
 
 Sistema de hooks para **Timeshift** que respalda y restaura imágenes **UKI (Unified Kernel Images)** en sistemas con **Btrfs + Secure Boot**.
 
@@ -438,7 +438,7 @@ Cada `push` a `main` ejecuta [`.github/workflows/ci.yml`](.github/workflows/ci.y
 
 **`tests/smoke.sh`** ejecuta el backup hook de verdad contra un árbol temporal (`mktemp -d`) usando las variables `TSUKI_*`, sin tocar el sistema. Comprueba la purga de la ESP, el respaldo selectivo con su `.sha256`, los dos layouts de snapshot (Btrfs y rsync) y la idempotencia de una segunda ejecución.
 
-**`tests/boot-partition.sh`** cubre el restore hook, que hasta v3.5 no tenía ninguna cobertura. La clave es que **no necesita una ESP real ni privilegios**: se re-ejecuta dentro de un namespace de usuario (`unshare -r -m -p -f`) y levanta un chroot mínimo con *bind mounts* de `/usr`, `/dev`, `/sys` y `/proc`. Dentro, `/boot` y `/efi` se pueden montar o dejar como directorios planos, así que se ejercita el código de producción tal cual, sin variables de entorno ni *seams* que solo usen los tests. Cubre 9 casos: los cuatro *layouts* de partición con UKIs en `/boot` y/o `/efi`, los dos escenarios de dual-boot con la partición de los UKIs **sin montar** (justo los que fallaban antes del fix), el caso "ninguna sirve" y tres de verificación de checksum.
+**`tests/boot-partition.sh`** cubre el restore hook, que hasta v3.5 no tenía ninguna cobertura. La clave es que **no necesita una ESP real ni privilegios**: se re-ejecuta dentro de un namespace de usuario (`unshare -r -m -p -f`) y levanta un chroot mínimo con *bind mounts* de `/usr`, `/dev`, `/sys` y `/proc`. Dentro, `/boot` y `/efi` se pueden montar o dejar como directorios planos, así que se ejercita el código de producción tal cual, sin variables de entorno ni *seams* que solo usen los tests. Cubre 12 casos (A–L): los cuatro *layouts* de partición con UKIs en `/boot` y/o `/efi`, los dos escenarios de dual-boot con la partición de los UKIs **sin montar** (justo los que fallaban antes del fix), el caso "ninguna sirve", tres de verificación de checksum y tres de regresión del prune (nombres sin versión, tuberías mayores de 64 KiB y `TS_SNAPSHOT_PATH` no reconocido).
 
 Si las *user namespaces* estuvieran deshabilitadas, el test **falla** en lugar de saltarse en silencio: un test que se salta solo no es cobertura.
 
@@ -450,7 +450,15 @@ Si las *user namespaces* estuvieran deshabilitadas, el test **falla** en lugar d
 
 Para el historial completo de cambios, ver [CHANGELOG.md](CHANGELOG.md).
 
-### v3.6 (Última versión)
+### v3.7 (Última versión)
+- **Los dos hooks podían borrar UKIs que debían conservar** por un `SIGPIPE` en `printf … | grep -qx`: con `pipefail`, `grep -q` sale en la primera coincidencia y `printf` muere con 141, y el `!` del `if` lo interpretaba como "no pertenece". Solo se dispara con volcados mayores de 64 KiB; medido con el idioma antiguo, **1083 de 1401 UKIs borrados, el vigente incluido**. Ahora la pertenencia se comprueba en bash puro con un array asociativo.
+- **El prune del restore borraba `.efi` ajenos a `kernel-install`** (`arch-linux.efi`, `rescue.efi`…) que el snapshot puede no contener por diseño. Ahora solo poda nombres versionados (`<machine-id>-<kver>.efi`) y solo si el snapshot trae al menos uno.
+- **La purga de la ESP podía vaciarla en un chroot de Live USB** o con `/usr/lib/modules` sin montar: la única red de seguridad era `uname -r`. Ahora trabaja en dos fases y **no poda nada si el borrado dejaría la partición sin ningún UKI versionado** (avisa con `WARN`).
+- **El restore podía dejar la partición de arranque montada** si abortaba antes de restaurar: el cleanup solo actuaba con `RESTORE_STARTED=true`. Ahora todo lo montado por el script se acumula en `MOUNTED_BY_US=()` y el `trap EXIT` lo desmonta siempre.
+- **Un `TS_SNAPSHOT_PATH` no reconocido caía en silencio al respaldo del sistema vivo** (root viejo con UKI nuevo = no arranca). Ahora **aborta** con un `ERROR` en vez de adivinar.
+- **Tests ampliados a 12 casos** en `tests/boot-partition.sh` (J: `rescue.efi` sobrevive al prune; K: >64 KiB de tubería sin podar; L: `TS_SNAPSHOT_PATH` no reconocido aborta) y **`[6/7]`/`[7/7]`** en `tests/smoke.sh`. Verificado en rojo/verde: con el idioma antiguo el caso K borra 63 UKIs.
+
+### v3.6
 - **El restore hook elegía la partición de arranque equivocada** (bug, no solo fragilidad). Aceptaba el **primer mountpoint** de `/boot`, `/efi`, `/boot/efi` sin comprobar nada y creaba el destino con `mkdir -p`. Con dos vfat montadas y solo una con UKIs (dual-boot), si la partición correcta no estaba montada, escribía los UKIs en la otra y —con `PRUNE_UKIS=true`— además borraba de ella los `.efi` que no estuvieran en el respaldo. El `mkdir -p` hacía que el error quedara "confirmado". Ahora una partición solo es candidata si está montada y tiene `EFI/Linux`, y si no hay ninguna el hook **aborta con un error claro** en vez de adivinar. Era justo lo que documentamos como limitación en v3.5.
 - **Los dos hooks ya no pueden apuntar a particiones distintas**: ambos aplican la misma regla (`is_boot_partition_dir`).
 - **Un `.sha256` con formato `sha256sum` abortaba la restauración**: se comparaba el fichero entero contra el hash pelado, así que un `.sha256` con formato `<hash>  <nombre>` fallaba siempre aunque el hash fuese correcto. Ahora se aceptan ambos formatos.

@@ -4,7 +4,7 @@ Todas las versiones significativas de este proyecto. Formato basado en [Keep a C
 
 ---
 
-## [No publicado]
+## [3.7] - 2026-11-13
 
 ### Fixed
 - **Los dos hooks podian borrar UKIs que debian conservar por un SIGPIPE en `printf … | grep -qx`** (revisión de 2026-11-13). La comprobación de pertenencia se hacía con esa tubería; con `set -o pipefail`, cuando `grep -q` sale en la primera coincidencia mientras `printf` sigue escribiendo, `printf` muere con 141, la tubería se propaga como fallo y el `!` del `if` lo interpreta como "no pertenece" → **se borra el UKI**. Solo se dispara con volcados mayores que el buffer de tubería (64 KiB): es decir, con un destino ya poblado por muchos UKIs, justo el escenario de varias generaciones de kernel. Medido con el idioma antiguo en el backup: **1083 de 1401 UKIs borrados, el vigente incluido**. Sustituido por pertenencia en bash puro con un array asociativo `keep` en `prune_stale_ukis()` (backup) y en el bloque de pruning del restore.
