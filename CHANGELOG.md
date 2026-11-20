@@ -4,6 +4,20 @@ Todas las versiones significativas de este proyecto. Formato basado en [Keep a C
 
 ---
 
+## [3.8] - 2026-11-20
+
+### Fixed
+- **Lote 3 de la revisión con otra IA (2026-11-20):**
+  - **Restore: todos los checksums se verifican ANTES de escribir nada en la ESP**. `.sha256` obligatorio; sin él se aborta. Copia atómica (`cp` al temporal + `sha256sum` del temporal + `sync -f` + `mv`) y log de trazabilidad `Checksum verificado para <UKI>`.
+  - **Restore: pruning por módulos del root restaurado** (no por respaldo). Conserva un UKI versionado si y sólo si existe `<MODULES_DIR>/<kver>` en el root que se va a arrancar; poda los que no tienen módulos y conserva los sin versión (`rescue.efi`, `arch-linux.efi`). Guarda de supervivientes: no poda si dejaría la ESP sin ningún UKI versionado.
+  - **Restore: comprobación de coherencia post-restore**. Falla si algún UKI versionado queda sin módulos en el root restaurado.
+  - **Exclusión mutua con `flock`** en ambos hooks: si otro proceso escribe UKIs, el backup se omite y el restore aborta. Nunca tocan la ESP a la vez.
+  - Se elimina `detect_chroot()` (ruidoso y sin efecto real).
+  - `tests/boot-partition.sh` añade el caso K (pruning por módulos) y el caso H fuerza una copia real con `.sha256` en formato `sha256sum`.
+
+### Added
+- **Logs de trazabilidad** en el restore: `Checksum verificado para <UKI>` tras validar cada checksum en la fase 1.
+
 ## [3.7] - 2026-11-13
 
 ### Fixed

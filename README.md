@@ -1,4 +1,4 @@
-# Timeshift UKI Hooks v3.7
+# Timeshift UKI Hooks v3.8
 
 Sistema de hooks para **Timeshift** que respalda y restaura imágenes **UKI (Unified Kernel Images)** en sistemas con **Btrfs + Secure Boot**.
 
@@ -450,8 +450,14 @@ Si las *user namespaces* estuvieran deshabilitadas, el test **falla** en lugar d
 
 Para el historial completo de cambios, ver [CHANGELOG.md](CHANGELOG.md).
 
-### v3.7 (Última versión)
-- **Los dos hooks podían borrar UKIs que debían conservar** por un `SIGPIPE` en `printf … | grep -qx`: con `pipefail`, `grep -q` sale en la primera coincidencia y `printf` muere con 141, y el `!` del `if` lo interpretaba como "no pertenece". Solo se dispara con volcados mayores de 64 KiB; medido con el idioma antiguo, **1083 de 1401 UKIs borrados, el vigente incluido**. Ahora la pertenencia se comprueba en bash puro con un array asociativo.
+### v3.8 (Última versión)
+- **Lote 3 de la revisión (2026-11-20):**
+  - **Restore: todos los checksums se verifican ANTES de escribir nada en la ESP**. `.sha256` obligatorio; sin él se aborta. Copia atómica (`cp` al temporal + `sha256sum` del temporal + `sync -f` + `mv`) y log de trazabilidad `Checksum verificado para <UKI>`.
+  - **Restore: pruning por módulos del root restaurado** (no por respaldo). Conserva un UKI versionado si y sólo si existe `<MODULES_DIR>/<kver>` en el root que se va a arrancar; poda los que no tienen módulos y conserva los sin versión (`rescue.efi`, `arch-linux.efi`). Guarda de supervivientes: no poda si dejaría la ESP sin ningún UKI versionado.
+  - **Restore: comprobación de coherencia post-restore**. Falla si algún UKI versionado queda sin módulos en el root restaurado.
+  - **Exclusión mutua con `flock`** en ambos hooks: si otro proceso escribe UKIs, el backup se omite y el restore aborta. Nunca tocan la ESP a la vez.
+  - Se elimina `detect_chroot()` (ruidoso y sin efecto real).
+  - `tests/boot-partition.sh` añade el caso K (pruning por módulos) y H ahora fuerza una copia real con `.sha256` en formato `sha256sum`.
 - **El prune del restore borraba `.efi` ajenos a `kernel-install`** (`arch-linux.efi`, `rescue.efi`…) que el snapshot puede no contener por diseño. Ahora solo poda nombres versionados (`<machine-id>-<kver>.efi`) y solo si el snapshot trae al menos uno.
 - **La purga de la ESP podía vaciarla en un chroot de Live USB** o con `/usr/lib/modules` sin montar: la única red de seguridad era `uname -r`. Ahora trabaja en dos fases y **no poda nada si el borrado dejaría la partición sin ningún UKI versionado** (avisa con `WARN`).
 - **El restore podía dejar la partición de arranque montada** si abortaba antes de restaurar: el cleanup solo actuaba con `RESTORE_STARTED=true`. Ahora todo lo montado por el script se acumula en `MOUNTED_BY_US=()` y el `trap EXIT` lo desmonta siempre.

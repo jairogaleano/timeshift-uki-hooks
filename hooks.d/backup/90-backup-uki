@@ -51,6 +51,9 @@ PRUNE_OLD_UKIS=true
 # (arch-linux.efi), cuyo nombre no lleva version y por tanto no se puede
 # decidir. Desactivar conserva todos los UKIs de la ESP.
 PRUNE_ESP_UKIS=true
+# Fichero de bloqueo: evita que dos ejecuciones simultaneas (p. ej. un restore a
+# mano mientras timeshift-autosnap lanza el backup hook) escriban UKIs a la vez.
+LOCK_FILE="${TSUKI_LOCK_FILE:-/run/lock/timeshift-uki-hooks.lock}"
 # ----------------------
 
 # Kernel en ejecucion. Se resuelve aqui (no dentro de compute_current_ukis)
@@ -402,6 +405,27 @@ copy_ukis() {
     fi
     return 0
 }
+
+# --- Exclusion mutua ---
+# flock -n (no bloqueante): si otro proceso mantiene el bloqueo, el backup se
+# OMITE (WARN + exit 0). Un fallo aqui NO debe romper la transaccion de pacman
+# que disparo timeshift-autosnap: el snapshot se crea igual, solo no se
+# refresca el respaldo de UKIs. Si el fichero de bloqueo ni siquiera se puede
+# abrir (p. ej. /run/lock no escribible), se continua SIN bloqueo: se degrada,
+# no se rompe.
+if { : >>"$LOCK_FILE"; } 2>/dev/null; then
+    exec 9>>"$LOCK_FILE"
+    if ! flock -n 9; then
+        log "WARN" "Otro proceso mantiene el bloqueo $LOCK_FILE. Se omite el respaldo de UKIs."
+        exit 0
+    fi
+else
+    log "WARN" "No se pudo abrir el fichero de bloqueo $LOCK_FILE; se continua sin bloqueo de concurrencia."
+fi
+# Con la accion por defecto, SIGINT/SIGTERM/SIGHUP no pasan por el flujo normal;
+# convertirlas en un exit 130 deja que los traps de salida (si los hubiera) y el
+# cierre del fd 9 se ejecuten de forma ordenada.
+trap 'exit 130' INT TERM HUP
 
 mkdir -p "$BACKUP_DIR"
 

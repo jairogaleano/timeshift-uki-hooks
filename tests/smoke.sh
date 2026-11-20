@@ -52,6 +52,7 @@ run_backup_to() {
     export TSUKI_UKI_DIR="$1" \
            TSUKI_BACKUP_DIR="$2" \
            TSUKI_LOG_FILE="$LOG" \
+           TSUKI_LOCK_FILE="$TMP/uki.lock" \
            TS_SNAPSHOT_PATH="$3"
     # El hook escribe cada mensaje a stdout Y al fichero de log. Aqui solo
     # interesa el fichero (assert_log lo lee de $LOG), asi que se silencia

@@ -56,7 +56,7 @@ CUR_EFI="${MID}-${KVER}.efi"
 # para que cada caso controle su propio entorno (el caso L necesita que
 # TSUKI_BACKUP_DIR NO venga definida, porque es el override manual que gana a
 # TS_SNAPSHOT_PATH).
-unset TSUKI_UKI_DIR TSUKI_BACKUP_DIR TSUKI_LOG_FILE TS_SNAPSHOT_PATH
+unset TSUKI_UKI_DIR TSUKI_BACKUP_DIR TSUKI_LOG_FILE TSUKI_LOCK_FILE TS_SNAPSHOT_PATH
 
 TMP="$(mktemp -d)"
 R="$TMP/root"
@@ -103,6 +103,11 @@ link_or_bind() {
 
 build_chroot() {
     mkdir -p "$R"/usr "$R"/dev "$R"/sys "$R"/etc "$R"/proc "$R"/tmp "$R"/backup "$R"/hooks.d/restore
+    # /run/lock para el flock (el hook lo usa) y un /fake-modules con el kernel
+    # en ejecucion: TSUKI_MODULES_DIR evita depender de /usr/lib/modules, que en
+    # CI (ubuntu-latest) no tiene el kernel del runner y haria que la poda y la
+    # comprobacion de coherencia dieran resultados distintos segun la maquina.
+    mkdir -p "$R/run/lock" "$R/fake-modules/$KVER"
     mount --rbind /usr  "$R/usr"
     mount --rbind /dev  "$R/dev"
     mount --rbind /sys  "$R/sys"
@@ -286,14 +291,22 @@ echo "  G: UKI con kernel desconocido         -> tambien se restaura"
 # el nombre pegado. Antes de v3.6 el hook comparaba el fichero entero contra
 # el hash pelado, con lo que ese formato hacia fallar la verificacion y ABORTAR
 # la restauracion con un hash perfectamente correcto.
+# El respaldo lleva un UKI DISTINTO al de la ESP para forzar la copia real y
+# que el checksum se verifique antes de escribir (fase 1) y al copiar (fase 2).
 setup boot boot
-printf '%s  %s\n' "$bare_sha" "$CUR_EFI" > "$R/backup/$CUR_EFI.sha256"
+printf 'UKI-NUEVO' > "$R/backup/$CUR_EFI"
+nuevo_sha="$(sha256sum "$R/backup/$CUR_EFI" | awk '{print $1}')"
+printf '%s  %s\n' "$nuevo_sha" "$CUR_EFI" > "$R/backup/$CUR_EFI.sha256"
 rc=$(run_restore)
 [ "$rc" -eq 0 ] \
     || fail "caso H: un .sha256 en formato sha256sum deberia aceptarse, rc=$rc"
 grep -q "Checksum verificado para $CUR_EFI" "$LOG" \
     || fail "caso H: no verifico el checksum (hash correcto, formato sha256sum)"
-echo "  H: .sha256 formato 'sha256sum'       -> se acepta y verifica"
+grep -q "Restaurado: $CUR_EFI (checksum verificado)" "$LOG" \
+    || fail "caso H: no copio el UKI al verificarse el checksum correcto"
+[ "$(cat "$TMP/src-boot/EFI/Linux/$CUR_EFI")" = "UKI-NUEVO" ] \
+    || fail "caso H: el UKI de la ESP no se actualizo con el del respaldo"
+echo "  H: .sha256 formato 'sha256sum'       -> se acepta, verifica y copia"
 
 # --- I: .sha256 corrupto -> ABORTA, no restaura basura ---------------------
 setup boot boot
@@ -310,7 +323,9 @@ echo "  I: .sha256 corrupto                  -> ABORTA en vez de restaurar basur
 # pertenece, asi que borrarlo podria dejar el sistema sin una entrada de
 # arranque que el snapshot no contiene por diseno.
 setup boot boot
-# El caso I dejo el .sha256 corrupto; se restaura el bueno para poder restaurar
+# El caso H dejo el UKI como UKI-NUEVO y el caso I dejo el .sha256 corrupto;
+# se restauran ambos al estado conocido para poder restaurar este caso.
+printf 'UKI' > "$R/backup/$CUR_EFI"
 printf '%s\n' "$bare_sha" > "$R/backup/$CUR_EFI.sha256"
 printf 'RESCUE' > "$TMP/src-boot/EFI/Linux/rescue.efi"
 rc=$(run_restore)
@@ -321,36 +336,39 @@ grep -q "Se conserva UKI sin version en el nombre: rescue.efi" "$LOG" \
     || fail "caso J: no logueo la conservacion de rescue.efi"
 echo "  J: UKI sin version (rescue.efi)      -> se conserva, no se poda"
 
-# --- K: lista grande en el respaldo -> el prune no borra UKIs vigentes ------
-# El prune del restore usaba el mismo idioma `printf | grep -qx` que el del
-# backup (ver tests/smoke.sh, caso [6/7]): con `set -o pipefail`, si el volcado
-# supera el buffer de tuberia (64 KiB) grep sale en la primera coincidencia,
-# printf muere por SIGPIPE y el `!` lo lee como "no esta en el snapshot" ->
-# borra UKIs que debia conservar. Aqui el prune recorre el DESTINO, asi que el
-# destino tiene que estar ya poblado. Para pasar de 64 KiB con pocos ficheros
-# se usan nombres largos (242 B): el bug depende de los BYTES que se escriben
-# a la tuberia, no del numero de UKIs, y asi el caso cuesta ~1 s en vez de
-# copiar 1400 ficheros.
+# --- K: Pruning por modulos (sync ESP <-> root restaurado) ------------------
+# El prune decide por MODULOS en el root restaurado, no por lo que esta en el
+# respaldo. Un UKI versionado sin modulos en el root restaurado se poda; uno
+# con modulos se conserva; los sin version (rescue.efi) siempre se conservan.
+# Esto reemplaza la antigua comprobacion de pertenencia al respaldo (que era la
+# que disparaba el SIGPIPE): ya no hay tuberias en el prune.
 setup boot boot
-BIG_N=320
-big_pad="$(printf '%0190d' 0)"
-big_sha="$(printf 'UKI-BIG' | sha256sum | awk '{print $1}')"
-for i in $(seq 1 "$BIG_N"); do
-    printf -v big_efi 'f%031x-%s-%s.efi' "$i" "$big_pad" "$KVER"
-    printf 'UKI-BIG' > "$TMP/src-boot/EFI/Linux/$big_efi"
-    printf 'UKI-BIG' > "$R/backup/$big_efi"
-    # El destino ya tiene el mismo contenido: con el checksum correcto el hook
-    # salta la copia, que es lo unico lento de este caso.
-    printf '%s\n' "$big_sha" > "$R/backup/$big_efi.sha256"
-done
+# UKI vigente: su kernel tiene modulos en el root restaurado -> se conserva.
+printf 'UKI' > "$R/backup/$CUR_EFI"
+printf '%s\n' "$bare_sha" > "$R/backup/$CUR_EFI.sha256"
+# UKI antiguo: su kernel NO tiene modulos en el root restaurado -> se poda.
+OLD_KVER="0.0.1-fake-old"
+OLD_EFI="${MID}-${OLD_KVER}.efi"
+printf 'UKI-OLD' > "$TMP/src-boot/EFI/Linux/$OLD_EFI"
+printf 'UKI-OLD' > "$R/backup/$OLD_EFI"
+printf '%s\n' "$(sha256sum "$R/backup/$OLD_EFI" | awk '{print $1}')" > "$R/backup/$OLD_EFI.sha256"
+# UKI sin version en el nombre -> se conserva siempre.
+printf 'RESCUE' > "$TMP/src-boot/EFI/Linux/rescue.efi"
 rc=$(run_restore)
 [ "$rc" -eq 0 ] || fail "caso K: se esperaba exito, rc=$rc"
-if grep -q "Pruned UKI obsoleto" "$LOG"; then
-    fail "caso K: podo UKIs que estaban en el snapshot (¿SIGPIPE en la tuberia?)"
-fi
 [ -f "$TMP/src-boot/EFI/Linux/$CUR_EFI" ] \
-    || fail "caso K: desaparecio el UKI vigente"
-echo "  K: lista grande en el respaldo       -> no se poda ninguno (SIGPIPE)"
+    || fail "caso K: podo el UKI vigente que tiene modulos"
+[ ! -f "$TMP/src-boot/EFI/Linux/$OLD_EFI" ] \
+    || fail "caso K: no podo el UKI antiguo sin modulos"
+[ -f "$TMP/src-boot/EFI/Linux/rescue.efi" ] \
+    || fail "caso K: podo un UKI sin version en el nombre"
+grep -qF "Pruned UKI obsoleto (sin modulos en" "$LOG" \
+    || fail "caso K: no logro la poda del UKI antiguo"
+grep -qF "$OLD_EFI" "$LOG" \
+    || fail "caso K: no logro la poda del UKI antiguo (nombre en el log)"
+grep -qF "Se conserva UKI sin version en el nombre: rescue.efi" "$LOG" \
+    || fail "caso K: no logro la conservacion de rescue.efi"
+echo "  K: pruning por modulos               -> conserva vigente+y-sin-version, poda sin-modulos"
 
 # --- L: TS_SNAPSHOT_PATH no reconocido -> ABORTA, no usa el respaldo vivo ---
 # En el restore Btrfs in-system, TS_SNAPSHOT_PATH tiene que contener @/etc

@@ -20,8 +20,12 @@
 # que estaban guardados en /etc/timeshift/uki-backup/ (incluidos en el snapshot) y los
 # devuelve a la particion EFI (ESP) para que coincidan con el kernel/modulos restaurados.
 #
-# Seguridad: Los UKIs ya estaban verificados por Secure Boot antes de ser respaldados.
-# Este script solo restaura archivos existentes y calcula checksums para verificar integridad.
+# Seguridad: este hook no aporta ninguna garantia criptografica propia. El .sha256
+# que acompana a cada UKI detecta CORRUPCION (copia a medias, bit rot), no
+# manipulacion: quien pueda escribir en el respaldo puede reescribir tambien su
+# .sha256. Los UKIs van firmados y Secure Boot los valida al arrancar; comprobar
+# la firma antes de copiar exigiria llamar a sbctl/sbverify, cosa que este hook no
+# hace.
 #
 
 set -euo pipefail
@@ -31,15 +35,19 @@ set -euo pipefail
 BACKUP_DIR=""
 LOG_FILE="${TSUKI_LOG_FILE:-/var/log/timeshift.log}"
 # Margen libre que se quiere dejar en la ESP tras restaurar. El umbral total se
-# calcula en tiempo de ejecucion como ESP_MIN_FREE_MB + el tamano de los UKIs a
-# restaurar: hasta v3.4 era un valor fijo (50 MB) menor que un unico UKI tipico
-# (~75 MB), por lo que el aviso de "poco espacio" no podia dispararse cuando
-# realmente no cabia.
+# calcula en tiempo de ejecucion como ESP_MIN_FREE_MB + el tamano de los UKIs que
+# de verdad se van a escribir (los identicos se saltan): hasta v3.4 era un valor
+# fijo (50 MB) menor que un unico UKI tipico (~75 MB), por lo que el aviso de
+# "poco espacio" no podia dispararse cuando realmente no cabia.
 ESP_MIN_FREE_MB=20
-# Elimina de la particion de arranque los UKIs que no estan en el snapshot
-# restaurado (sync ESP <-> snapshot). Esencial con layout kernel-install,
-# donde conviven multiples UKIs versionados (<machine-id>-<kver>.efi).
+# Elimina de la particion de arranque los UKIs versionados
+# (<machine-id>-<kver>.efi) cuyo kernel no tiene modulos en el root restaurado
+# (sync ESP <-> root restaurado). Esencial con layout kernel-install, donde
+# conviven multiples UKIs versionados.
 PRUNE_UKIS=true
+# Fichero de bloqueo: evita que dos ejecuciones simultaneas (p. ej. un restore a
+# mano mientras timeshift-autosnap lanza el backup hook) escriban a la vez.
+LOCK_FILE="${TSUKI_LOCK_FILE:-/run/lock/timeshift-uki-hooks.lock}"
 # ----------------------
 
 log() {
@@ -85,6 +93,28 @@ if [ -n "$ROOT" ]; then
 fi
 BACKUP_DIR="${TSUKI_BACKUP_DIR:-${BACKUP_DIR:-/etc/timeshift/uki-backup}}"
 
+# Directorio de modulos del root RESTAURADO (el que se va a arrancar), no del
+# sistema vivo: con restore in-system el root vivo es justo el que se descarta.
+# Un UKI versionado solo puede arrancar si existe <MODULES_DIR>/<kver>.
+# Override de tests/CI: TSUKI_MODULES_DIR.
+MODULES_DIR="${TSUKI_MODULES_DIR:-${ROOT}/usr/lib/modules}"
+
+# --- Exclusion mutua ---
+# flock -n (no bloqueante): si otro proceso mantiene el bloqueo, el restore
+# ABORTA. Es preferible no tocar la particion de arranque a hacerlo mientras
+# otro proceso escribe UKIs. Si el fichero de bloqueo ni siquiera se puede
+# abrir (p. ej. /run/lock no escribible), se continua SIN bloqueo: se degrada,
+# no se rompe.
+if { : >>"$LOCK_FILE"; } 2>/dev/null; then
+    exec 9>>"$LOCK_FILE"
+    if ! flock -n 9; then
+        log "ERROR" "Otro proceso mantiene el bloqueo $LOCK_FILE. No se restaura ningun UKI."
+        exit 1
+    fi
+else
+    log "WARN" "No se pudo abrir el fichero de bloqueo $LOCK_FILE; se continua sin bloqueo de concurrencia."
+fi
+
 # Verificar si un punto de montaje corresponde a una particion de arranque valida
 # (ESP o XBOOTLDR) para evitar confusion con USBs
 is_valid_boot_partition() {
@@ -108,10 +138,21 @@ TARGET_MNT=""
 # cleanup ni siquiera corria si se abortaba antes de RESTORE_STARTED=true, asi
 # que un mount manual podia quedar colgado tras un fallo.
 MOUNTED_BY_US=()
+# Temporales de la copia atomica. El cleanup los borra SIEMPRE, tambien si el
+# script muere entre el cp y el mv (antes quedaban .tmp_* en la ESP).
+TMP_FILES=()
 
 # Cleanup seguro al salir (exit, error, o signal). Previene que la ESP quede
-# montada RW o que un mount manual quede colgado si el script aborta a mitad.
+# montada RW, que un temporal a medias quede en la particion de arranque o que
+# un mount manual quede colgado si el script aborta a mitad.
 cleanup() {
+    local f mnt
+    if [ ${#TMP_FILES[@]} -gt 0 ]; then
+        for f in "${TMP_FILES[@]}"; do
+            [ -e "$f" ] || continue
+            rm -f "$f" 2>/dev/null || true
+        done
+    fi
     # Remontar a ro solo tiene sentido si este script llego a remontar a rw.
     if [ "$WAS_RO" = true ] && [ -n "$TARGET_MNT" ]; then
         log "INFO" "[cleanup] Restaurando $TARGET_MNT a modo SOLO LECTURA..."
@@ -119,7 +160,6 @@ cleanup() {
     fi
     # Desmontar SIEMPRE lo montado por el script, aunque se aborte antes de
     # empezar a restaurar: si no, un fallo posterior dejaria montajes vivos.
-    local mnt
     if [ ${#MOUNTED_BY_US[@]} -gt 0 ]; then
         for mnt in "${MOUNTED_BY_US[@]}"; do
             log "INFO" "[cleanup] Desmontando $mnt (montado por este script)..."
@@ -128,32 +168,10 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
-
-# Deteccion de chroot (compatible con systemd, OpenRC, runit, etc.)
-detect_chroot() {
-    # Metodo 1: systemd-detect-virt (si esta disponible)
-    if command -v systemd-detect-virt &>/dev/null; then
-        systemd-detect-virt --chroot >/dev/null 2>&1 && return 0
-    fi
-    # Metodo 2: Comparar namespace de PID
-    local my_ns init_ns
-    my_ns=$(readlink /proc/self/ns/pid 2>/dev/null || true)
-    init_ns=$(readlink /proc/1/ns/pid 2>/dev/null || true)
-    [ -n "$my_ns" ] && [ -n "$init_ns" ] && [ "$my_ns" != "$init_ns" ] && return 0
-    # Metodo 3: Verificar /.dockerenv
-    [ -f /.dockerenv ] && return 0
-    # Metodo 4: Verificar /proc/1/cgroup (contenedores)
-    if [ -f /proc/1/cgroup ]; then
-        grep -qE "docker|lxc|kubepods|containerd" /proc/1/cgroup 2>/dev/null && return 0
-    fi
-    return 1
-}
-
-if detect_chroot; then
-    # No hace falta ajustar rutas: /boot, /efi y /boot/efi ya se resuelven
-    # dentro del chroot, que es donde el usuario ha montado la ESP.
-    log "INFO" "Entorno chroot detectado. Las rutas de la ESP se resuelven dentro del chroot."
-fi
+# Con la accion por defecto, SIGINT/SIGTERM/SIGHUP no ejecutan el trap EXIT (el
+# proceso muere sin cleanup). Convertirlas en un exit normal garantiza que se
+# ejecute y no queden temporales ni montajes colgados.
+trap 'exit 130' INT TERM HUP
 
 # 1. Resolver el punto de montaje de la particion de arranque
 #
@@ -260,14 +278,24 @@ if [ ! -d "$UKI_DIR" ]; then
     exit 1
 fi
 
-# 4. Verificar si existe el directorio de respaldo
+# 4. Verificar el directorio de respaldo y la integridad de TODOS los UKIs
 if [ ! -d "$BACKUP_DIR" ]; then
     log "ERROR" "No se encontro el directorio de respaldo $BACKUP_DIR"
     exit 1
 fi
 
+# Se ignoran las rotaciones .bak antiguas (.bak.<fecha>.efi acaba en .efi y el
+# glob lo recogeria). Ya no se generan, pero pueden existir en respaldos viejos.
+backup_ukis=()
 shopt -s nullglob
-backup_ukis=("$BACKUP_DIR"/*.efi)
+for candidate in "$BACKUP_DIR"/*.efi; do
+    candidate_base="${candidate##*/}"
+    if [[ "$candidate_base" == *".bak."* || "$candidate_base" == *".bak.efi" ]]; then
+        log "INFO" "Se ignora la rotacion antigua del respaldo: $candidate_base"
+        continue
+    fi
+    backup_ukis+=("$candidate")
+done
 shopt -u nullglob
 
 if [ ${#backup_ukis[@]} -eq 0 ]; then
@@ -275,195 +303,240 @@ if [ ${#backup_ukis[@]} -eq 0 ]; then
     exit 1
 fi
 
-# 5. Verificar espacio disponible en ESP
-esp_avail_kb=$(df --output=avail "$TARGET_MNT" 2>/dev/null | tail -1)
-esp_avail_mb=$((esp_avail_kb / 1024)) 2>/dev/null || esp_avail_mb=0
-esp_needed_mb=0
-for uki_size in "${backup_ukis[@]}"; do
-    [ -f "$uki_size" ] || continue
-    uki_bytes=$(stat -c %s "$uki_size" 2>/dev/null || echo 0)
-    esp_needed_mb=$((esp_needed_mb + (uki_bytes + 1048575) / 1048576))
-done
-required_mb=$((esp_needed_mb + ESP_MIN_FREE_MB))
-if [ "$esp_avail_mb" -lt "$required_mb" ] && [ "$esp_avail_mb" -gt 0 ]; then
-    log "WARN" "Poco espacio disponible en ESP: ${esp_avail_mb}MB (necesarios ~${required_mb}MB: ${esp_needed_mb}MB de UKIs + ${ESP_MIN_FREE_MB}MB de margen)"
-    log "WARN" "Continuando de todas formas..."
-elif [ "$esp_avail_mb" -gt 0 ]; then
-    log "INFO" "Espacio disponible en ESP: ${esp_avail_mb}MB (necesarios ~${required_mb}MB)"
-fi
-
-# 6. Limpiar archivos .sha256 huerfanos en respaldo
-for sha_file in "$BACKUP_DIR"/*.sha256; do
-    [ -f "$sha_file" ] || continue
-    efi_file="${sha_file%.sha256}"
-    if [ ! -f "$efi_file" ]; then
-        rm -f "$sha_file"
-        log "INFO" "Limpiado .sha256 huerfano: ${sha_file##*/}"
-    fi
-done
-
-# Limpiar archivos .bak huerfanos en respaldo (rotaciones viejas)
-shopt -s nullglob
-for bak_file in "$BACKUP_DIR"/*.bak.*.efi "$BACKUP_DIR"/*.bak.efi "$BACKUP_DIR"/*.bak.*.efi.sha256 "$BACKUP_DIR"/*.bak.efi.sha256; do
-    [ -f "$bak_file" ] || continue
-    rm -f "$bak_file"
-    log "INFO" "Limpiado .bak huerfano en respaldo: ${bak_file##*/}"
-done
-shopt -u nullglob
-
-# 7. Restaurar UKIs con verificacion de integridad
-log "INFO" "Verificando integridad de UKIs respaldados..."
-
-restored_count=0
+# Fase 1: verificar TODOS los checksums ANTES de escribir nada en la ESP. Si el
+# segundo UKI estuviera corrupto, el original copiaba el primero y abortaba
+# despues, dejando la particion de arranque a medias. Aqui, o estan todos bien
+# o no se toca la ESP. El .sha256 es OBLIGATORIO: sin el no hay forma de
+# distinguir una copia completa de una truncada.
+log "INFO" "Verificando integridad de ${#backup_ukis[@]} UKI(s) respaldados en $BACKUP_DIR..."
+declare -A backup_sha=()
+to_copy=()
 for uki_backup in "${backup_ukis[@]}"; do
     [ -f "$uki_backup" ] || continue
-
     basename="${uki_backup##*/}"
-
-    # Omitir archivos .bak (rotaciones viejas)
-    if [[ "$basename" == *".bak."* || "$basename" == *".bak.efi" ]]; then
-        continue
-    fi
-
-    # El backup hook escribe el checksum como "<UKI>.efi.sha256" (p. ej.
-    # arch-linux.efi.sha256), asi que el nombre del UKI se conserva intacto.
     sha_file="$uki_backup.sha256"
-    expected_sha=""
 
-    if [ -f "$sha_file" ]; then
-        # Se lee el primer campo del fichero, no el fichero entero. El backup
-        # hook escribe solo el hash, pero un .sha256 generado con `sha256sum
-        # UKI > UKI.sha256` (poco habitual pero muy natural, y lo que produce
-        # `sha256sum -c`) trae "hash  nombre". Antes se comparaba el fichero
-        # entero contra el hash pelado, con lo que ese formato hacia fallar la
-        # verificacion (y abortar la restauracion) aunque el hash fuese
-        # correcto.
-        expected_sha=$(awk '{print $1}' "$sha_file" 2>/dev/null)
-        actual_sha=$(sha256sum "$uki_backup" | awk '{print $1}')
-
-        if [ -z "$expected_sha" ] || [ "$expected_sha" != "$actual_sha" ]; then
-            log "ERROR" "Checksum fallo para $basename. Esperado: ${expected_sha:-<vacio>}, Actual: $actual_sha"
-            exit 1
-        fi
-        log "INFO" "Checksum verificado para $basename"
-    else
-        log "WARN" "No se encontro archivo SHA256 para $basename, continuando sin verificacion"
+    if [ ! -f "$sha_file" ]; then
+        log "ERROR" "Falta el checksum $sha_file; no se restaura ningun UKI."
+        exit 1
     fi
 
-    # Saltar si el archivo ya existe y es identico
+    # Se lee el PRIMER campo, no el fichero entero: el backup hook escribe solo
+    # el hash, pero un .sha256 generado con `sha256sum UKI > UKI.sha256` trae
+    # "hash  nombre". Comparar el fichero entero contra el hash pelado hacia
+    # fallar ese formato aunque el hash fuese correcto.
+    expected_sha=$(awk 'NR==1 {print $1}' "$sha_file" 2>/dev/null || true)
+    if [ -z "$expected_sha" ]; then
+        log "ERROR" "El checksum $sha_file esta vacio o ilegible; no se restaura ningun UKI."
+        exit 1
+    fi
+    actual_sha=$(sha256sum "$uki_backup" | awk '{print $1}')
+    if [ "$expected_sha" != "$actual_sha" ]; then
+        log "ERROR" "Checksum fallo para $basename. Esperado: $expected_sha, Actual: $actual_sha"
+        log "ERROR" "No se restaura ningun UKI (ni siquiera los que estaban bien)."
+        exit 1
+    fi
+    backup_sha["$basename"]="$expected_sha"
+    log "INFO" "Checksum verificado para $basename"
+
+    # Saltar si el destino ya tiene exactamente ese UKI.
     if [ -f "$UKI_DIR/$basename" ]; then
         current_sha=$(sha256sum "$UKI_DIR/$basename" | awk '{print $1}')
-        if [ -n "$expected_sha" ] && [ "$current_sha" == "$expected_sha" ]; then
-            log "INFO" "El archivo $basename ya existe y es identico en el destino. Saltando."
+        if [ "$current_sha" = "$expected_sha" ]; then
+            log "INFO" "$basename ya existe e identico en la ESP. Se salta."
             continue
         fi
     fi
+    to_copy+=("$uki_backup")
+done
 
-    # Copiar de forma atomica: escribir en temp, verificar, luego mover
-    temp_file="$(mktemp "$UKI_DIR/.tmp_XXXXXXXX")"
-    if cp --preserve=all "$uki_backup" "$temp_file"; then
-        if mv "$temp_file" "$UKI_DIR/$basename"; then
-            log "INFO" "Restaurado: $basename"
-            restored_count=$((restored_count + 1))
-        else
-            log "ERROR" "No se pudo completar la copia atomica de $basename"
-            rm -f "$temp_file"
-            exit 1
-        fi
+# 5. Verificar espacio disponible en la ESP
+# Solo cuentan los UKIs que de verdad se van a escribir. Espacio via stat -f
+# (bloques libres * tamano de bloque), con df -Pk como respaldo; la expresion
+# anterior `esp_avail_mb=$(( ... )) 2>/dev/null || ...` no capturaba el error
+# del builtin (la redireccion aplica al builtin, no a la sustitucion).
+esp_avail_mb=0
+fs_info=$(stat -f -c '%a %S' "$TARGET_MNT" 2>/dev/null || true)
+if [ -n "$fs_info" ]; then
+    avail_blocks="${fs_info%% *}"
+    block_size="${fs_info##* }"
+    if [[ "$avail_blocks" =~ ^[0-9]+$ ]] && [[ "$block_size" =~ ^[0-9]+$ ]] && [ "$block_size" -gt 0 ]; then
+        esp_avail_mb=$(( avail_blocks * block_size / 1048576 ))
+    fi
+fi
+if [ "$esp_avail_mb" -eq 0 ]; then
+    df_avail_kb=$(df -Pk "$TARGET_MNT" 2>/dev/null | awk 'NR==2 {print $4}' || true)
+    if [[ "$df_avail_kb" =~ ^[0-9]+$ ]]; then
+        esp_avail_mb=$(( df_avail_kb / 1024 ))
+    fi
+fi
+
+esp_needed_mb=0
+for uki_src in "${to_copy[@]}"; do
+    [ -f "$uki_src" ] || continue
+    uki_bytes=$(stat -c %s "$uki_src" 2>/dev/null || echo 0)
+    [[ "$uki_bytes" =~ ^[0-9]+$ ]] || uki_bytes=0
+    esp_needed_mb=$(( esp_needed_mb + (uki_bytes + 1048575) / 1048576 ))
+done
+required_mb=$(( esp_needed_mb + ESP_MIN_FREE_MB ))
+
+# Pico de ocupacion: el temporal nuevo convive con el UKI viejo hasta el mv
+# (rename atomico), asi que hace falta el tamano del nuevo + el margen. El
+# viejo ya esta descontado del espacio libre actual.
+if [ "$esp_avail_mb" -eq 0 ]; then
+    log "WARN" "No se pudo determinar el espacio libre en $TARGET_MNT; se continua sin comprobacion."
+elif [ "$esp_avail_mb" -lt "$required_mb" ]; then
+    log "ERROR" "Espacio insuficiente en $TARGET_MNT: ${esp_avail_mb}MB libres, se necesitan ~${required_mb}MB (${esp_needed_mb}MB de UKIs + ${ESP_MIN_FREE_MB}MB de margen)."
+    log "ERROR" "No se copia nada: un cp a medias dejaria la particion de arranque sin un UKI completo."
+    exit 1
+else
+    log "INFO" "Espacio en $TARGET_MNT: ${esp_avail_mb}MB libres (necesarios ~${required_mb}MB)"
+fi
+
+# 6. Restaurar UKIs (copia atomica + verificacion del temporal)
+restored_count=0
+if [ ${#to_copy[@]} -gt 0 ]; then
+    log "INFO" "Restaurando ${#to_copy[@]} UKI(s) en $UKI_DIR..."
+fi
+for uki_backup in "${to_copy[@]}"; do
+    basename="${uki_backup##*/}"
+    expected_sha="${backup_sha[$basename]}"
+
+    # Temporal en el MISMO filesystem que el destino (mv atomico) y SIN sufijo
+    # .efi, para que systemd-boot no lo vea como una entrada si el proceso se
+    # interrumpe antes del mv.
+    temp_file=$(mktemp "$UKI_DIR/.tmp_XXXXXXXX")
+    TMP_FILES+=("$temp_file")
+
+    if ! cp --preserve=all "$uki_backup" "$temp_file"; then
+        log "ERROR" "No se pudo copiar $basename al temporal $temp_file"
+        exit 1
+    fi
+
+    # Verificar el TEMPORAL, no el origen: lo que importa es que lo que va a
+    # quedar en la ESP se leyo entero y sin corrupcion en el camino.
+    temp_sha=$(sha256sum "$temp_file" | awk '{print $1}')
+    if [ "$temp_sha" != "$expected_sha" ]; then
+        log "ERROR" "El temporal de $basename no coincide con el checksum. Esperado: $expected_sha, Temporal: $temp_sha"
+        exit 1
+    fi
+
+    # Volcar el temporal a disco antes del rename: si el sistema se cae justo
+    # despues del mv, el contenido ya esta en la particion.
+    sync -f "$temp_file" 2>/dev/null || sync
+
+    if mv -f "$temp_file" "$UKI_DIR/$basename"; then
+        log "INFO" "Restaurado: $basename (checksum verificado)"
+        restored_count=$((restored_count + 1))
     else
-        log "ERROR" "No se pudo copiar $basename"
-        rm -f "$temp_file"
+        log "ERROR" "No se pudo completar la copia atomica de $basename"
         exit 1
     fi
 done
 
-# 7b. Pruning de UKIs obsoletos en la particion de arranque
+# 7. Pruning de UKIs obsoletos en la particion de arranque
 # Con layout kernel-install conviven multiples UKIs versionados
-# (<machine-id>-<kver>.efi). Si queda en la ESP un UKI que no pertenece al
-# snapshot restaurado, sus modulos no existiran en el root restaurado y el
-# sistema no arrancaria (mismatch kernel/modulos). Por eso sincronizamos la
-# particion de arranque con el contenido del snapshot.
+# (<machine-id>-<kver>.efi). La pertenencia NO se decide por "esta en el
+# respaldo" (el backup hook solo respalda el UKI del kernel en ejecucion, de
+# modo que un kernel de respaldo instalado —linux-lts— se podria borrar por
+# error), sino por MODULOS: un UKI es arrancable si y solo si existe
+# <MODULES_DIR>/<kver> en el root que se acaba de restaurar. Asi se conservan
+# los kernels instalados aunque no esten en el respaldo y se eliminan los de
+# kernels que ya no existen.
 pruned_count=0
 if [ "$PRUNE_UKIS" = true ]; then
-    log "INFO" "Pruning: sincronizando $UKI_DIR con el snapshot restaurado..."
-
-    backup_names=()
-    for uki_backup in "${backup_ukis[@]}"; do
-        [ -f "$uki_backup" ] || continue
-        backup_names+=("${uki_backup##*/}")
-    done
-
-    # Solo tiene sentido podar los UKIs versionados si el snapshot trae alguno.
-    # Si el snapshot es de un layout clasico (arch-linux.efi) no se debe borrar
-    # un versionado ajeno: mismo criterio que compute_current_ukis del backup.
-    has_versioned_backup=false
-    for backup_name in "${backup_names[@]}"; do
-        [[ "$backup_name" =~ ^[0-9a-f]{32}-.+\.efi$ ]] && has_versioned_backup=true
-    done
-
-    # Pertenencia en bash puro: con `printf ... | grep -qx` la tuberia puede
-    # morir por SIGPIPE (grep sale al primer match mientras printf sigue
-    # escribiendo) y con `set -o pipefail` ese 141 se propaga como fallo de la
-    # tuberia -> el `!` lo convierte en "no esta en el snapshot" y el hook BORRA
-    # un UKI que debia conservar. Con listas grandes la carrera se dispara.
-    declare -A keep=()
-    if [ ${#backup_names[@]} -gt 0 ]; then
-        for backup_name in "${backup_names[@]}"; do
-            keep["$backup_name"]=1
-        done
-    fi
+    log "INFO" "Pruning: podando UKIs de $UKI_DIR sin modulos en $MODULES_DIR..."
 
     shopt -s nullglob
-    for existing in "$UKI_DIR"/*.efi; do
+    esp_ukis=("$UKI_DIR"/*.efi)
+    shopt -u nullglob
+
+    # Dos fases: primero se decide QUE se podaria y solo despues se borra. La
+    # guarda de supervivientes necesita el calculo completo antes de tocar nada.
+    to_prune=()
+    survivors=0
+    for existing in "${esp_ukis[@]}"; do
         [ -f "$existing" ] || continue
         base="${existing##*/}"
-
-        # Siempre eliminar rotaciones viejas (.bak)
-        if [[ "$base" == *".bak."* || "$base" == *".bak.efi" ]]; then
-            rm -f "$existing"
-            log "INFO" "Pruned .bak obsoleto: $base"
-            pruned_count=$((pruned_count + 1))
-            continue
-        fi
 
         # Solo se podan nombres versionados (<machine-id>-<kver>.efi), el unico
         # layout que gestiona kernel-install. Cualquier otro .efi (arch-linux.efi,
         # rescue.efi, etc.) se conserva: borrarlo podria dejar el sistema sin una
         # entrada de arranque que el snapshot no contiene por diseno.
-        if [[ ! "$base" =~ ^[0-9a-f]{32}-.+\.efi$ ]]; then
+        if [[ ! "$base" =~ ^[0-9a-f]{32}-(.+)\.efi$ ]]; then
             log "INFO" "Se conserva UKI sin version en el nombre: $base"
             continue
         fi
+        kver="${BASH_REMATCH[1]}"
 
-        if [ "$has_versioned_backup" != true ]; then
-            log "WARN" "El snapshot no trae UKIs versionados; se conserva $base"
+        if [ -d "$MODULES_DIR/$kver" ]; then
+            survivors=$((survivors + 1))
             continue
         fi
-
-        # Eliminar UKIs versionados que no estan en el snapshot respaldado
-        if [ -z "${keep[$base]+x}" ]; then
-            rm -f "$existing"
-            log "INFO" "Pruned UKI obsoleto (no existe en el snapshot): $base"
-            pruned_count=$((pruned_count + 1))
-        fi
+        to_prune+=("$existing")
     done
-    shopt -u nullglob
 
-    if [ "$pruned_count" -gt 0 ]; then
-        log "INFO" "Pruning completado: $pruned_count archivos eliminados"
+    if [ ${#to_prune[@]} -eq 0 ]; then
+        log "INFO" "Pruning completado: sin UKIs obsoletos (${survivors} con modulos en $MODULES_DIR)"
+    elif [ "$survivors" -eq 0 ]; then
+        # Guarda conservadora: si el borrado dejaria la particion SIN ningun UKI
+        # versionado arrancable, lo mas probable es que el diagnostico sea
+        # erroneo (chroot sin /usr/lib/modules, MODULES_DIR mal resuelto). Es
+        # preferible dejar UKIs obsoletos a quedarse sin arranque.
+        log "WARN" "La poda dejaria $UKI_DIR sin ningun UKI versionado con modulos en $MODULES_DIR; no se poda nada."
+        log "WARN" "Revisa que $MODULES_DIR corresponda al root que se va a arrancar."
     else
-        log "INFO" "Pruning completado: sin archivos obsoletos"
+        for existing in "${to_prune[@]}"; do
+            base="${existing##*/}"
+            if rm -f "$existing"; then
+                log "INFO" "Pruned UKI obsoleto (sin modulos en $MODULES_DIR): $base"
+                pruned_count=$((pruned_count + 1))
+            else
+                log "WARN" "No se pudo eliminar el UKI obsoleto: $base"
+            fi
+        done
+        log "INFO" "Pruning completado: $pruned_count eliminado(s), ${survivors} conservado(s)"
     fi
 else
     log "INFO" "Pruning desactivado (PRUNE_UKIS=false). Se conservan UKIs no respaldados."
 fi
 
-# 8. Reportar resultado final
-# (la limpieza de ESP/RO la maneja el trap EXIT)
+# 8. Comprobacion de coherencia post-restore
+# Ultima red: cada UKI versionado que quede en la ESP debe tener sus modulos en
+# el root restaurado. Si no, el sistema no arrancaria y es mejor fallar aqui con
+# un mensaje claro que reiniciar a ciegas.
+if [ -d "$MODULES_DIR" ]; then
+    shopt -s nullglob
+    coherent=0
+    incoherent=0
+    for existing in "$UKI_DIR"/*.efi; do
+        [ -f "$existing" ] || continue
+        base="${existing##*/}"
+        [[ "$base" =~ ^[0-9a-f]{32}-(.+)\.efi$ ]] || continue
+        kver="${BASH_REMATCH[1]}"
+        if [ -d "$MODULES_DIR/$kver" ]; then
+            coherent=$((coherent + 1))
+        else
+            incoherent=$((incoherent + 1))
+            log "ERROR" "Incoherencia: $base no tiene modulos en $MODULES_DIR/$kver"
+        fi
+    done
+    shopt -u nullglob
+    if [ "$incoherent" -gt 0 ]; then
+        log "ERROR" "El root restaurado no puede arrancar $incoherent UKI(s) de $UKI_DIR. Revisa el snapshot antes de reiniciar."
+        exit 1
+    fi
+    log "INFO" "Coherencia OK: $coherent UKI(s) versionado(s) con modulos en $MODULES_DIR"
+else
+    log "WARN" "No se pudo verificar la coherencia: $MODULES_DIR no existe. Comprueba a mano que los UKIs de $UKI_DIR corresponden al root restaurado."
+fi
+
+# 9. Reportar resultado final
+# (la limpieza de ESP/RO y de temporales la maneja el trap EXIT)
 if [ "$restored_count" -gt 0 ] || [ "$pruned_count" -gt 0 ]; then
     log "INFO" "EXITO: $restored_count UKIs restaurados, $pruned_count obsoletos eliminados"
 else
-    log "INFO" "Finalizado: Sin archivos restaurados (el respaldo podria no contener UKIs .efi)"
+    log "INFO" "Finalizado: sin cambios (los UKIs de la ESP ya coinciden con el respaldo)"
 fi
 
 exit 0
