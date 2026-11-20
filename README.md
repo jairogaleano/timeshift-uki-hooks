@@ -1,4 +1,4 @@
-# Timeshift UKI Hooks v3.8
+# Timeshift UKI Hooks v3.8.2
 
 Sistema de hooks para **Timeshift** que respalda y restaura imágenes **UKI (Unified Kernel Images)** en sistemas con **Btrfs + Secure Boot**.
 
@@ -347,7 +347,7 @@ Una partición es **candidata** si está **montada** y tiene el directorio `EFI/
 
 El **PARTTYPE** (ESP `c12a7328` o XBOOTLDR `bc13c2ff`) solo se exige cuando hay que buscar **fuera** de las rutas estándar, que es donde cabe confundirse con un USB. En las rutas estándar basta con `EFI/Linux`.
 
-Si **ninguna** partición candidata, los hooks lo dicen y **no escriben nada**. En el restore significa que la restauración no se lleva a cabo; **no** significa que los UKIs acaben en una partición cualquiera.
+Si **no hay** ninguna partición candidata, los hooks lo dicen y **no escriben nada**. En el restore significa que la restauración no se lleva a cabo; **no** significa que los UKIs acaben en una partición cualquiera.
 
 ### Por qué no se acepta «el primer mountpoint que aparezca»
 
@@ -450,7 +450,7 @@ Si las *user namespaces* estuvieran deshabilitadas, el test **falla** en lugar d
 
 Para el historial completo de cambios, ver [CHANGELOG.md](CHANGELOG.md).
 
-### v3.8 (Última versión)
+### v3.8.2 (Última versión)
 - **Lote 3 de la revisión (2026-11-20):**
   - **Restore: todos los checksums se verifican ANTES de escribir nada en la ESP**. `.sha256` obligatorio; sin él se aborta. Copia atómica (`cp` al temporal + `sha256sum` del temporal + `sync -f` + `mv`) y log de trazabilidad `Checksum verificado para <UKI>`.
   - **Restore: pruning por módulos del root restaurado** (no por respaldo). Conserva un UKI versionado si y sólo si existe `<MODULES_DIR>/<kver>` en el root que se va a arrancar; poda los que no tienen módulos y conserva los sin versión (`rescue.efi`, `arch-linux.efi`). Guarda de supervivientes: no poda si dejaría la ESP sin ningún UKI versionado.
@@ -461,6 +461,7 @@ Para el historial completo de cambios, ver [CHANGELOG.md](CHANGELOG.md).
 - **El prune del restore borraba `.efi` ajenos a `kernel-install`** (`arch-linux.efi`, `rescue.efi`…) que el snapshot puede no contener por diseño. Ahora solo poda nombres versionados (`<machine-id>-<kver>.efi`) y solo si el snapshot trae al menos uno.
 - **La purga de la ESP podía vaciarla en un chroot de Live USB** o con `/usr/lib/modules` sin montar: la única red de seguridad era `uname -r`. Ahora trabaja en dos fases y **no poda nada si el borrado dejaría la partición sin ningún UKI versionado** (avisa con `WARN`).
 - **El restore podía dejar la partición de arranque montada** si abortaba antes de restaurar: el cleanup solo actuaba con `RESTORE_STARTED=true`. Ahora todo lo montado por el script se acumula en `MOUNTED_BY_US=()` y el `trap EXIT` lo desmonta siempre.
+- **`install.sh` corregido (v3.8.2):** respalda hooks previos antes de sobrescribir, copia atómica con `install -Dm755`, `awk`/`date`/`mktemp`/`stat` declarados como dependencias, no instala paquetes sin terminal, `SCRIPT_DIR` robusto bajo `pkexec`.
 - **Un `TS_SNAPSHOT_PATH` no reconocido caía en silencio al respaldo del sistema vivo** (root viejo con UKI nuevo = no arranca). Ahora **aborta** con un `ERROR` en vez de adivinar.
 - **Tests ampliados a 12 casos** en `tests/boot-partition.sh` (J: `rescue.efi` sobrevive al prune; K: >64 KiB de tubería sin podar; L: `TS_SNAPSHOT_PATH` no reconocido aborta) y **`[6/7]`/`[7/7]`** en `tests/smoke.sh`. Verificado en rojo/verde: con el idioma antiguo el caso K borra 63 UKIs.
 
@@ -479,7 +480,7 @@ Para el historial completo de cambios, ver [CHANGELOG.md](CHANGELOG.md).
 - **`VERSION`**: fichero único de versión; la CI obliga a que todos los ficheros lo declaren igual.
 - **Los hooks de git eran `644`** (no ejecutables en un clon recién hecho). Ahora son `755`.
 - **Restauración**: los UKIs se conservan dentro de cada snapshot, así que el directorio de respaldo ocupa ~75 MB adicionales por snapshot (Btrfs no deduplica entre subvolúmenes).
-- **Correcciones de documentación**: título del README sincronizado con la versión real, tabla de plataformas ajustada a lo que está probado, `ARCHITECTURE.md` y este README alineados con `PRUNE_OLD_UKIS`, y eliminas dos afirmaciones que no se correspondían con el código (la detección de ESP por PARTTYPE sí existe en el restore hook, y `IN_CHROOT` nunca se usó para ajustar rutas).
+- **Correcciones de documentación**: título del README sincronizado con la versión real, tabla de plataformas ajustada a lo que está probado, `ARCHITECTURE.md` y este README alineados con `PRUNE_OLD_UKIS`, y se eliminaron dos afirmaciones que no se correspondían con el código (la detección de ESP por PARTTYPE sí existe en el restore hook, y `IN_CHROOT` nunca se usó para ajustar rutas).
 - **`install.sh`**: comprueba que Timeshift esté instalado y que exista un `EFI/Linux` en alguna vfat, y avisa si los hooks actuales pertenecen a un paquete (su uso deja los ficheros fuera del gestor de paquetes y hace que `pacman -Qkk` los marque como alterados).
 
 ### v3.4

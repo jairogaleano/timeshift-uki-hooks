@@ -4,6 +4,17 @@ Todas las versiones significativas de este proyecto. Formato basado en [Keep a C
 
 ---
 
+## [3.8.2] - 2026-11-20
+
+### Fixed
+- **install.sh: ya no pisa la configuración del usuario.** Antes de sobrescribir, respalda los hooks previos a `<hook>.bak-<fecha-hora>` (conserva cambios manuales en `PRUNE_*` / `TSUKI_*`).
+- **install.sh: copia atómica con `install -Dm755`** en lugar de `cp` + `chmod` separados; si falla la copia no queda sin hook.
+- **install.sh: `awk`, `date`, `mktemp`, `stat` añadidos a `DEP_PKG`** (ya se usaban en install.sh y en los hooks, pero no estaban declarados).
+- **install.sh: no instala paquetes sin terminal.** Si falta una dependencia y no hay TTY, aborta pidiendo instalación manual en lugar de asumir "S".
+- **install.sh: `SCRIPT_DIR` robusto con `readlink -f "${BASH_SOURCE[0]}"`** para que funcione bajo `pkexec` (que cambia el cwd).
+- **install.sh: shebang portable `#!/usr/bin/env bash`** y `set -euo pipefail`.
+- **Erratas del README:** "ninguna partición candidata" → "no hay ninguna partición candidata"; "eliminas dos afirmaciones" → "se eliminaron dos afirmaciones".
+
 ## [3.8] - 2026-11-20
 
 ### Fixed

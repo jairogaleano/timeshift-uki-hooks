@@ -1,12 +1,12 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
-# Timeshift UKI Hooks - Instalador v3.8
+# Timeshift UKI Hooks - Instalador v3.8.2
 # Soporte universal: Arch, Debian, Fedora, openSUSE, Void, Gentoo, etc.
 #
 
-set -e
+set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # Version unica del repositorio (ver tambien .github/workflows/ci.yml, que
 # comprueba que todos los ficheros la declaran coherente).
 VERSION="$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || echo "desconocida")"
@@ -62,12 +62,17 @@ echo "Verificando dependencias del sistema..."
 # Herramienta -> Paquete (nombres en la mayoria de distros)
 # findmnt/lsblk/mountpoint -> util-linux
 # sha256sum/df -> coreutils
+# awk/date/mktemp/stat -> coreutils (gawk/mawk en algunas distros)
 declare -A DEP_PKG=(
   ["findmnt"]="util-linux"
   ["lsblk"]="util-linux"
   ["mountpoint"]="util-linux"
   ["sha256sum"]="coreutils"
   ["df"]="coreutils"
+  ["awk"]="coreutils"
+  ["date"]="coreutils"
+  ["mktemp"]="coreutils"
+  ["stat"]="coreutils"
 )
 
 MISSING_DEPS=()
@@ -86,21 +91,8 @@ done
 if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
   echo "Faltan las siguientes dependencias: ${MISSING_DEPS[*]}"
   echo "Paquetes necesarios: ${MISSING_PKGS[*]}"
-  # Non-interactive: instalar automaticamente si no hay terminal (pkexec, cron, etc.)
-  if [ -t 0 ] && [ -t 1 ]; then
-    read -rp "¿Deseas instalarlos ahora? [S/n] " answer
-    answer="${answer:-S}"
-  else
-    answer="S"
-  fi
-  if [[ "$answer" =~ ^[Ss]$ ]]; then
-    echo "Instalando paquetes..."
-    install_packages "${MISSING_PKGS[@]}"
-    echo "Paquetes instalados correctamente."
-  else
-    echo "Instalacion cancelada. Por favor, instala manualmente: ${MISSING_PKGS[*]}"
-    exit 1
-  fi
+  echo "Instalalas manualmente (el instalador no instala software sin confirmacion)."
+  exit 1
 fi
 echo "Todas las dependencias encontradas."
 
@@ -156,23 +148,28 @@ echo "Instalando Timeshift UKI Hooks v${VERSION}..."
 mkdir -p /etc/timeshift/backup-hooks.d
 mkdir -p /etc/timeshift/restore-hooks.d
 
-# Limpiar versiones anteriores (incluyendo archivos con sufijos de version)
-echo "Limpiando instalaciones previas..."
-rm -f /etc/timeshift/backup-hooks.d/90-backup-uki*
-rm -f /etc/timeshift/restore-hooks.d/90-restore-uki*
+# Respaldar hooks previos (si existen) antes de sobrescribir, para no perder
+# cambios manuales del usuario (PRUNE_*, TSUKI_*, etc.).
+TS="$(date +%Y%m%d-%H%M%S)"
+for h in /etc/timeshift/backup-hooks.d/90-backup-uki \
+         /etc/timeshift/restore-hooks.d/90-restore-uki; do
+  [ -f "$h" ] || continue
+  cp -a "$h" "${h}.bak-${TS}"
+  echo "Respaldo previo: $h -> ${h}.bak-${TS}"
+done
 
-# Copiar scripts con nombres estandar
+# Copiar scripts con nombres estandar (copia atomica y permisos en un solo paso)
 echo "Copiando scripts..."
-cp "$SCRIPT_DIR/hooks.d/backup/90-backup-uki" /etc/timeshift/backup-hooks.d/
-cp "$SCRIPT_DIR/hooks.d/restore/90-restore-uki" /etc/timeshift/restore-hooks.d/
-
-# Aplicar permisos
-echo "Aplicando permisos de ejecucion..."
-chmod +x /etc/timeshift/backup-hooks.d/90-backup-uki
-chmod +x /etc/timeshift/restore-hooks.d/90-restore-uki
+install -Dm755 "$SCRIPT_DIR/hooks.d/backup/90-backup-uki" \
+    /etc/timeshift/backup-hooks.d/90-backup-uki
+install -Dm755 "$SCRIPT_DIR/hooks.d/restore/90-restore-uki" \
+    /etc/timeshift/restore-hooks.d/90-restore-uki
 
 echo "Instalacion/Actualizacion a v${VERSION} completada correctamente."
 echo "Los hooks han sido instalados con nombres estandar para compatibilidad con run-parts."
+echo ""
+echo "Si editaste PRUNE_* u otras constantes en la cabecera de los hooks, tus"
+echo "cambios se conservan en el fichero .bak-${TS} generado arriba."
 echo ""
 echo "Si no los instalas con el paquete (AUR: timeshift-uki-hooks-git), recuerda que"
 echo "install.sh deja los ficheros fuera del gestor de paquetes: una actualizacion"
