@@ -2,7 +2,7 @@
 pkgname=timeshift-uki-hooks-git
 # pkgver lo calcula pkgver() abajo desde git describe; este valor es solo un
 # placeholder para makepkg antes del primer build.
-pkgver=v3.8.2.r0.gdcc1c40
+pkgver=v3.11.1.r0.gedb3276
 pkgrel=1
 pkgdesc="Hooks inteligentes para Timeshift que sincronizan imágenes UKI (Unified Kernel Images) con snapshots Btrfs"
 arch=('any')
@@ -15,6 +15,7 @@ conflicts=('timeshift-uki-hooks')
 install=timeshift-uki-hooks.install
 source=("git+https://github.com/jairogaleano/timeshift-uki-hooks.git")
 sha256sums=('SKIP')
+backup=('etc/timeshift/uki-hooks.conf')
 
 pkgver() {
   cd "timeshift-uki-hooks"
@@ -29,6 +30,10 @@ package() {
 
   install -m755 hooks.d/backup/90-backup-uki "${pkgdir}/etc/timeshift/backup-hooks.d/90-backup-uki"
   install -m755 hooks.d/restore/90-restore-uki "${pkgdir}/etc/timeshift/restore-hooks.d/90-restore-uki"
+
+  # Fichero de configuracion de usuario (marcado como backup para que pacman
+  # no lo sobrescriba si el usuario lo ha modificado).
+  install -Dm644 uki-hooks.conf "${pkgdir}/etc/timeshift/uki-hooks.conf"
 
   install -d "${pkgdir}/usr/share/licenses/${pkgname}"
   install -m644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"

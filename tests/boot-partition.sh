@@ -65,8 +65,15 @@ ERR="$R/tmp/restore.err"
 cleanup() {
     umount "$R/boot" "$R/efi" 2>/dev/null || true
     umount -R "$R" 2>/dev/null || true
-    chmod -R u+w "$TMP" 2>/dev/null || true
-    rm -rf "$TMP" 2>/dev/null || true
+    # Verificar que no queden montajes activos antes de tocar $TMP.
+    # En contenedores o entornos con submontajes colgados, rm -rf sobre un
+    # directorio con mounts activos puede borrar ficheros del host.
+    if ! findmnt -R "$TMP" >/dev/null 2>&1; then
+        chmod -R u+w "$TMP" 2>/dev/null || true
+        rm -rf "$TMP" 2>/dev/null || true
+    else
+        echo "WARN: $TMP aun tiene montajes activos, no se puede limpiar completamente" >&2
+    fi
 }
 trap cleanup EXIT
 

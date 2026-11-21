@@ -4,6 +4,20 @@ Todas las versiones significativas de este proyecto. Formato basado en [Keep a C
 
 ---
 
+## [3.11.2] - 2026-11-20
+
+### Fixed
+- **load_conf() endurecido:**
+  - `export CLAVE=valor` ahora funciona: se comprueba el prefijo `export` ANTES de quitar espacios de la clave (antes `export PRUNE_UKIS` se convertía en `exportPRUNE_UKIS` y se descartaba como clave desconocida).
+  - Comprobación de permisos robusta: `stat -c %a` se normaliza con `printf '%04d'` para evitar fallos con ceros a la izquierda (0064 se leía como "64" y se aceptaba erróneamente escritura de grupo).
+  - `val` se recorta por ambos lados (antes solo al final): `PRUNE_UKIS = false` ahora se acepta correctamente.
+  - `ESP_MIN_FREE_MB=08` o `09` ya no fallan por interpretación octal: se usa `10#$val`.
+- **tests/conf.sh corregido:** falsos positivos eliminados; `setup_backup_uki` crea el directorio de módulos para el restore; tests 12 y 18 verifican que no haya error de aritmética en lugar de asumir éxito.
+- **tests/boot-partition.sh:** `cleanup()` verifica con `findmnt -R` que no queden montajes activos antes de `chmod`/`rm -rf` sobre $TMP (evita borrar directorios montados en contenedores).
+- **install.sh:** eliminada función `install_packages()` nunca usada; `DEP_PKG["awk"]` eliminada (imprecisa); `cp --preserve=all` → `cp --preserve=timestamps` en el restore (más seguro en vfat); `findmnt -rno` con `IFS=` en ambos hooks.
+- **Empaquetado sincronizado:** PKGBUILD raíz y aur/PKGBUILD ahora idénticos (incluyen uki-hooks.conf como backup); .SRCINFO regenerado.
+- **CI:** tests/backup-multiboot.sh y tests/restore-multiboot.sh se ejecutan (no solo bash -n y shellcheck).
+
 ## [3.11.1] - 2026-11-20
 
 ### Fixed

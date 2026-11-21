@@ -1,6 +1,6 @@
 pkgbase = timeshift-uki-hooks-git
 	pkgdesc = Hooks inteligentes para Timeshift que sincronizan imágenes UKI (Unified Kernel Images) con snapshots Btrfs
-	pkgver = v3.9.r0.ge3328b8
+	pkgver = v3.11.1.r0.gedb3276
 	pkgrel = 1
 	url = https://github.com/jairogaleano/timeshift-uki-hooks
 	install = timeshift-uki-hooks.install
@@ -14,6 +14,7 @@ pkgbase = timeshift-uki-hooks-git
 	depends = util-linux
 	provides = timeshift-uki-hooks
 	conflicts = timeshift-uki-hooks
+	backup = etc/timeshift/uki-hooks.conf
 	source = git+https://github.com/jairogaleano/timeshift-uki-hooks.git
 	sha256sums = SKIP
 

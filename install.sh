@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Timeshift UKI Hooks - Instalador v3.11.1
+# Timeshift UKI Hooks - Instalador v3.11.2
 # Soporte universal: Arch, Debian, Fedora, openSUSE, Void, Gentoo, etc.
 #
 
@@ -36,24 +36,6 @@ detect_pkg_manager() {
   fi
 }
 
-install_packages() {
-  local pkgs=("$@")
-  local mgr
-  mgr=$(detect_pkg_manager)
-  case "$mgr" in
-    pacman) pacman -S --noconfirm "${pkgs[@]}" ;;
-    apt)    apt-get update -qq && apt-get install -y "${pkgs[@]}" ;;
-    dnf)    dnf install -y "${pkgs[@]}" ;;
-    zypper) zypper install -y "${pkgs[@]}" ;;
-    xbps)   xbps-install -y "${pkgs[@]}" ;;
-    apk)    apk add --no-cache "${pkgs[@]}" ;;
-    *)
-      echo "Error: No se detecto un gestor de paquetes compatible."
-      echo "Instala manualmente: ${pkgs[*]}"
-      return 1
-      ;;
-  esac
-}
 
 # --- Verificacion de dependencias ---
 
@@ -71,7 +53,6 @@ declare -A DEP_PKG=(
   ["flock"]="util-linux"
   ["sha256sum"]="coreutils"
   ["df"]="coreutils"
-  ["awk"]="coreutils"
   ["date"]="coreutils"
   ["mktemp"]="coreutils"
   ["stat"]="coreutils"

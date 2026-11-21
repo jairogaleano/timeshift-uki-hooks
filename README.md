@@ -1,4 +1,4 @@
-# Timeshift UKI Hooks v3.11.1
+# Timeshift UKI Hooks v3.11.2
 
 Sistema de hooks para **Timeshift** que respalda y restaura imágenes **UKI (Unified Kernel Images)** en sistemas con **Btrfs + Secure Boot**.
 
@@ -502,22 +502,17 @@ Si las *user namespaces* estuvieran deshabilitadas, el test **falla** en lugar d
 
 Para el historial completo de cambios, ver [CHANGELOG.md](CHANGELOG.md).
 
-### v3.11.1 (Última versión)
-- **Carga segura de configuración (load_conf) endurecida:**
-  - **Fallo cerrado:** un valor invalido en cualquier `PRUNE_*` desactiva esa purga y avisa con `WARN` en el log, en vez de ignorarse en silencio y dejar el valor anterior (`true`).
-  - **Mas formatos aceptados:** comentarios en linea (`CLAVE=valor # nota`), comillas (`"false"`, `'false'`), mayusculas (`False`, `TRUE`), prefijo `export`, CRLF y tabuladores finales.
-  - **Sin `eval`:** asignacion con `printf -v` sobre claves de lista blanca.
-  - **Propietario por uid:** `stat -c %u` en vez del nombre, mas robusto en chroot.
-  - **Avisos en el log:** fichero rechazado por propietario o permisos, clave desconocida, linea sin `=` y entero invalido dejan un `WARN` en `/var/log/timeshift.log`.
-- **`.bak` fuera de `hooks.d/`:** `install.sh` guarda las copias de respaldo de
-  los hooks previos en `/etc/timeshift/uki-hooks.bak/` en lugar del mismo
-  directorio `hooks.d/`, donde `run-parts` podría confundirlos.
-- **`flock` añadido a `DEP_PKG`:** `install.sh` lo declara como dependencia
-  (ambos hooks lo usan para exclusión mutua desde v3.8).
-- **CI:** `tests/backup-multiboot.sh` y `tests/restore-multiboot.sh` se añaden
-  al workflow (sintaxis, ShellCheck y ejecución).
-- **Tests de configuración:** `tests/conf.sh` con 19 comprobaciones por hook
-  (38 en total) sobre carga, validación y seguridad de `uki-hooks.conf`.
+### v3.11.2 (Última versión)
+- **load_conf() endurecido:**
+  - `export CLAVE=valor` ahora funciona: se comprueba el prefijo `export` ANTES de quitar espacios de la clave (antes `export PRUNE_UKIS` se convertía en `exportPRUNE_UKIS` y se descartaba como clave desconocida).
+  - Comprobación de permisos robusta: `stat -c %a` se normaliza con `printf '%04d'` para evitar fallos con ceros a la izquierda (0064 se leía como "64" y se aceptaba erróneamente escritura de grupo).
+  - `val` se recorta por ambos lados (antes solo al final): `PRUNE_UKIS = false` ahora se acepta correctamente.
+  - `ESP_MIN_FREE_MB=08` o `09` ya no fallan por interpretación octal: se usa `10#$val`.
+- **tests/conf.sh corregido:** falsos positivos eliminados; `setup_backup_uki` crea el directorio de módulos para el restore; tests 12 y 18 verifican que no haya error de aritmética en lugar de asumir éxito.
+- **tests/boot-partition.sh:** `cleanup()` verifica con `findmnt -R` que no queden montajes activos antes de `chmod`/`rm -rf` sobre $TMP (evita borrar directorios montados en contenedores).
+- **install.sh:** eliminada función `install_packages()` nunca usada; `DEP_PKG["awk"]` eliminada (imprecisa); `cp --preserve=all` → `cp --preserve=timestamps` en el restore (más seguro en vfat); `findmnt -rno` con `IFS=` en ambos hooks.
+- **Empaquetado sincronizado:** PKGBUILD raíz y aur/PKGBUILD ahora idénticos (incluyen uki-hooks.conf como backup); .SRCINFO regenerado.
+- **CI:** tests/backup-multiboot.sh y tests/restore-multiboot.sh se ejecutan (no solo bash -n y shellcheck).
 
 ### v3.10
 - **Configuración de usuario externa (`/etc/timeshift/uki-hooks.conf`).**

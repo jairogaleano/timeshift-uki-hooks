@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Restore Script (v3.11.1)
+# Timeshift UKI Hooks - Restore Script (v3.11.2)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -69,7 +69,7 @@ log() {
 load_conf() {
     local conf_file="$1"
     [ -f "$conf_file" ] || return 0
-    local owner_uid perms g o
+    local owner_uid perms
     owner_uid=$(stat -c %u "$conf_file" 2>/dev/null || true)
     perms=$(stat -c %a "$conf_file" 2>/dev/null || true)
     # Propietario debe ser root (uid 0). Usar uid en vez de nombre por robustez en chroot.
@@ -78,8 +78,11 @@ load_conf() {
         return 0
     }
     # Permisos: rechazar si grupo u otros tienen escritura.
-    g="${perms:1:1}"
-    o="${perms:2:1}"
+    # Normalizar a 4 digitos con ceros a la izquierda: stat -c %a omite ceros.
+    perms=$(printf '%04d' "$perms")
+    # Los dos últimos dígitos son grupo y otros.
+    local g="${perms:2:1}"
+    local o="${perms:3:1}"
     case "$g$o" in
         *[2367]*) {
             log "WARN" "ukiconf: $conf_file tiene escritura para grupo u otros, se ignora"
@@ -103,13 +106,16 @@ load_conf() {
             log "WARN" "ukiconf: linea $lineno sin '=', se ignora: $line"
             continue
         }
-        # Quitar espacios alrededor de clave y valor
+        # Quitar espacios alrededor de clave y valor (ambos lados)
         key="${key//[[:space:]]/}"
+        val="${val//[[:space:]]/}"
         # Soportar comentario en linea: CLAVE=valor # comentario
         val="${val%%#*}"
         val="${val%"${val##*[![:space:]]}"}"
-        # Soportar export PRUNE_UKIS=false
+        # Soportar export PRUNE_UKIS=false: comprobar ANTES de quitar espacios de key
         [[ "$key" =~ ^export[[:space:]]+(.+)$ ]] && key="${BASH_REMATCH[1]}"
+        # Quitar espacios de la clave tras el prefijo export
+        key="${key//[[:space:]]/}"
         # Soportar comillas alrededor del valor: "false" o 'false'
         [[ "$val" =~ ^\"(.*)\"$ ]] && val="${BASH_REMATCH[1]}"
         [[ "$val" =~ ^\'(.*)\'$ ]] && val="${BASH_REMATCH[1]}"
@@ -126,7 +132,8 @@ load_conf() {
                 ;;
             ESP_MIN_FREE_MB)
                 if [[ "$val" =~ ^[0-9]+$ ]]; then
-                    printf -v "$key" "$val"
+                    # Usar 10# para evitar interpretación octal (08, 09)
+                    printf -v "$key" "$((10#$val))"
                 else
                     log "WARN" "ukiconf: valor invalido para ESP_MIN_FREE_MB='$val' (linea $lineno), se ignora"
                 fi
@@ -184,6 +191,18 @@ BACKUP_DIR="${TSUKI_BACKUP_DIR:-${BACKUP_DIR:-/etc/timeshift/uki-backup}}"
 # Override de tests/CI: TSUKI_MODULES_DIR.
 MODULES_DIR="${TSUKI_MODULES_DIR:-${ROOT}/usr/lib/modules}"
 
+# Directorio de UKIs de origen para tests/CI. Si se define, se usa en lugar de
+# detectar la ESP real. Esto permite probar el restore hook sin montar una
+# partición vfat real.
+# Override de tests/CI: TSUKI_UKI_DIR.
+if [ -n "${TSUKI_UKI_DIR:-}" ] && [ -d "$TSUKI_UKI_DIR" ]; then
+    UKI_DIR="$TSUKI_UKI_DIR"
+    TARGET_MNT="$(dirname "$(dirname "$UKI_DIR")")"
+else
+    UKI_DIR=""
+    TARGET_MNT=""
+fi
+
 # machine-id del root RESTAURADO (el que se va a arrancar). Los UKIs de
 # kernel-install se llaman <machine-id>-<kver>.efi y la ESP/XBOOTLDR puede
 # compartirse con otra instalacion Linux (otro machine-id): este hook solo poda
@@ -236,7 +255,7 @@ is_valid_boot_partition() {
 log "INFO" "Iniciando restauracion de UKIs"
 
 WAS_RO=false
-TARGET_MNT=""
+TARGET_MNT="${TARGET_MNT:-}"
 # Puntos de montaje que ha montado ESTE script (los del fallback de abajo). Se
 # guardan todos para desmontarlos al salir; antes solo habia un booleano y el
 # cleanup ni siquiera corria si se abortaba antes de RESTORE_STARTED=true, asi
@@ -316,7 +335,7 @@ resolve_esp_mount() {
         fi
     done
     local esp
-    esp=$(findmnt -no TARGET -t vfat 2>/dev/null | while read -r mnt; do
+    esp=$(findmnt -rno TARGET -t vfat 2>/dev/null | while IFS= read -r mnt; do
         if [ -d "$mnt/EFI/Linux" ] && is_valid_boot_partition "$mnt"; then
             echo "$mnt"
             break
@@ -329,23 +348,26 @@ resolve_esp_mount() {
     return 1
 }
 
-# 2. Asegurar el montaje de la particion de arranque
-if ! TARGET_MNT=$(resolve_esp_mount); then
-    for mnt in /boot /efi /boot/efi; do
-        if [ -d "$mnt" ] && [ ! -L "$mnt" ]; then
-            if ! mountpoint -q "$mnt" 2>/dev/null; then
-                log "INFO" "Intentando montar $mnt..."
-                if mount "$mnt" 2>/dev/null; then
-                    log "INFO" "$mnt montado exitosamente."
-                    MOUNTED_BY_US+=("$mnt")
+# 2. Asegurar el montaje de la particion de arranque (solo si TSUKI_UKI_DIR
+# no ya la define).
+if [ -z "$TARGET_MNT" ]; then
+    if ! TARGET_MNT=$(resolve_esp_mount); then
+        for mnt in /boot /efi /boot/efi; do
+            if [ -d "$mnt" ] && [ ! -L "$mnt" ]; then
+                if ! mountpoint -q "$mnt" 2>/dev/null; then
+                    log "INFO" "Intentando montar $mnt..."
+                    if mount "$mnt" 2>/dev/null; then
+                        log "INFO" "$mnt montado exitosamente."
+                        MOUNTED_BY_US+=("$mnt")
+                    fi
                 fi
             fi
-        fi
-    done
-    # Reintentar la resolucion: lo que vale es lo que resolve_esp_mount()
-    # acepte, NO lo que se haya conseguido montar. Antes se aceptaba aqui el
-    # primer mountpoint sin validar, que es justo el bug que se corrige.
-    TARGET_MNT=$(resolve_esp_mount || true)
+        done
+        # Reintentar la resolucion: lo que vale es lo que resolve_esp_mount()
+        # acepte, NO lo que se haya conseguido montar. Antes se aceptaba aqui el
+        # primer mountpoint sin validar, que es justo el bug que se corrige.
+        TARGET_MNT=$(resolve_esp_mount || true)
+    fi
 fi
 
 if [ -z "$TARGET_MNT" ]; then
@@ -374,7 +396,7 @@ fi
 # particiones que lo tienen. Antes (hasta v3.5) se creaba con `mkdir -p`, lo
 # que hacia que una eleccion erronea de particion quedara "confirmada" para
 # siempre en la particion equivocada.
-UKI_DIR="$TARGET_MNT/EFI/Linux"
+UKI_DIR="${UKI_DIR:-$TARGET_MNT/EFI/Linux}"
 if [ ! -d "$UKI_DIR" ]; then
     log "ERROR" "La particion de arranque $TARGET_MNT no tiene el directorio $UKI_DIR"
     log "ERROR" "No se crea automaticamente para no dejar UKIs en una particion que no los contenia."
@@ -517,7 +539,7 @@ for uki_backup in "${to_copy[@]}"; do
     temp_file=$(mktemp "$UKI_DIR/.tmp_XXXXXXXX")
     TMP_FILES+=("$temp_file")
 
-    if ! cp --preserve=all "$uki_backup" "$temp_file"; then
+    if ! cp --preserve=timestamps "$uki_backup" "$temp_file"; then
         log "ERROR" "No se pudo copiar $basename al temporal $temp_file"
         exit 1
     fi

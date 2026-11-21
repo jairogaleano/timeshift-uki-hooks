@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Backup Script (v3.11.1)
+# Timeshift UKI Hooks - Backup Script (v3.11.2)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -75,7 +75,7 @@ log() {
 load_conf() {
     local conf_file="$1"
     [ -f "$conf_file" ] || return 0
-    local owner_uid perms g o
+    local owner_uid perms
     owner_uid=$(stat -c %u "$conf_file" 2>/dev/null || true)
     perms=$(stat -c %a "$conf_file" 2>/dev/null || true)
     # Propietario debe ser root (uid 0). Usar uid en vez de nombre por robustez en chroot.
@@ -84,8 +84,11 @@ load_conf() {
         return 0
     }
     # Permisos: rechazar si grupo u otros tienen escritura.
-    g="${perms:1:1}"
-    o="${perms:2:1}"
+    # Normalizar a 4 digitos con ceros a la izquierda: stat -c %a omite ceros.
+    perms=$(printf '%04d' "$perms")
+    # Los dos últimos dígitos son grupo y otros.
+    local g="${perms:2:1}"
+    local o="${perms:3:1}"
     case "$g$o" in
         *[2367]*) {
             log "WARN" "ukiconf: $conf_file tiene escritura para grupo u otros, se ignora"
@@ -109,13 +112,16 @@ load_conf() {
             log "WARN" "ukiconf: linea $lineno sin '=', se ignora: $line"
             continue
         }
-        # Quitar espacios alrededor de clave y valor
+        # Quitar espacios alrededor de clave y valor (ambos lados)
         key="${key//[[:space:]]/}"
+        val="${val//[[:space:]]/}"
         # Soportar comentario en linea: CLAVE=valor # comentario
         val="${val%%#*}"
         val="${val%"${val##*[![:space:]]}"}"
-        # Soportar export PRUNE_UKIS=false
+        # Soportar export PRUNE_UKIS=false: comprobar ANTES de quitar espacios de key
         [[ "$key" =~ ^export[[:space:]]+(.+)$ ]] && key="${BASH_REMATCH[1]}"
+        # Quitar espacios de la clave tras el prefijo export
+        key="${key//[[:space:]]/}"
         # Soportar comillas alrededor del valor: "false" o 'false'
         [[ "$val" =~ ^\"(.*)\"$ ]] && val="${BASH_REMATCH[1]}"
         [[ "$val" =~ ^\'(.*)\'$ ]] && val="${BASH_REMATCH[1]}"
@@ -132,7 +138,8 @@ load_conf() {
                 ;;
             ESP_MIN_FREE_MB)
                 if [[ "$val" =~ ^[0-9]+$ ]]; then
-                    printf -v "$key" "$val"
+                    # Usar 10# para evitar interpretación octal (08, 09)
+                    printf -v "$key" "$((10#$val))"
                 else
                     log "WARN" "ukiconf: valor invalido para ESP_MIN_FREE_MB='$val' (linea $lineno), se ignora"
                 fi
@@ -222,7 +229,7 @@ detect_uki_dir() {
         fi
     done
     local esp
-    esp=$(findmnt -no TARGET -t vfat 2>/dev/null | while read -r mnt; do
+    esp=$(findmnt -rno TARGET -t vfat 2>/dev/null | while IFS= read -r mnt; do
         if [ -d "$mnt/EFI/Linux" ] && is_valid_boot_partition "$mnt"; then
             echo "$mnt"
             break

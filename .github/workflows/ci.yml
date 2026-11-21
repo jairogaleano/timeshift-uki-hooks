@@ -64,3 +64,10 @@ jobs:
       # tests/conf.sh cubre la carga segura de uki-hooks.conf en ambos hooks.
       - name: Config test
         run: ./tests/conf.sh
+
+      # Tests multiboot: verifican UKIs de otra instalacion en ESP compartida,
+      # purga del snapshot y checksums reparables.
+      - name: Multiboot backup test
+        run: ./tests/backup-multiboot.sh
+      - name: Multiboot restore test
+        run: ./tests/restore-multiboot.sh
