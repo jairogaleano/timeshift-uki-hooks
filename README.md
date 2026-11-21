@@ -1,4 +1,4 @@
-# Timeshift UKI Hooks v3.9
+# Timeshift UKI Hooks v3.10
 
 Sistema de hooks para **Timeshift** que respalda y restaura imágenes **UKI (Unified Kernel Images)** en sistemas con **Btrfs + Secure Boot**.
 
@@ -319,7 +319,18 @@ Ambos hooks se configuran editando las constantes de la cabecera de cada script.
 | `PRUNE_UKIS` | restore | `true` | Sincroniza la partición de arranque con el snapshot restaurado (elimina los UKIs que no están en él) |
 | `ESP_MIN_FREE_MB` | restore | `20` | Margen libre que se quiere dejar en la ESP tras restaurar |
 
+Estas cuatro constantes se leen desde `/etc/timeshift/uki-hooks.conf` si existe (se instala junto con los hooks); edita ese fichero en lugar de la cabecera de los hooks para que tus cambios no se pierdan al actualizar. El orden de prioridad es: variable de entorno `TSUKI_*` > fichero de configuración > valor por defecto.
+
 El espacio necesario se calcula en tiempo de ejecución como `ESP_MIN_FREE_MB` + el tamaño de los UKIs a restaurar. Hasta v3.4 era un umbral fijo de 50 MB, menor que un UKI típico (~75 MB), por lo que el aviso de "poco espacio" no podía dispararse cuando realmente no cabía.
+
+### Fichero de configuración de usuario (`/etc/timeshift/uki-hooks.conf`)
+
+Desde v3.10 la configuración vive en un fichero aparte para que no se sobrescriba al actualizar los hooks:
+
+- **Origen:** `uki-hooks.conf` en el repositorio (instalado como `/etc/timeshift/uki-hooks.conf`).
+- **Comportamiento de `install.sh`:** si `/etc/timeshift/uki-hooks.conf` ya existe, **no se sobrescribe**. Solo se crea la primera vez.
+- **Comportamiento de pacman:** el fichero está marcado como `backup` en el PKGBUILD, así que pacman lo preserva si lo has modificado (crea `.pacnew` en su lugar).
+- **Qué puedes editar:** `PRUNE_OLD_UKIS`, `PRUNE_ESP_UKIS`, `PRUNE_UKIS`, `ESP_MIN_FREE_MB`.
 
 Variables de entorno (para pruebas; no hace falta tocarlas en producción):
 
@@ -331,6 +342,11 @@ Variables de entorno (para pruebas; no hace falta tocarlas en producción):
 | `TSUKI_MACHINE_ID` | ambos | Fuerza el machine-id (32 hex) con el que se reconocen los UKIs propios |
 | `TSUKI_KVER` | backup | Fuerza la versión del kernel "en ejecución" (en vez de `uname -r`) |
 | `TSUKI_MODULES_DIR` | ambos | Fuerza el directorio de módulos (por defecto `/usr/lib/modules`; en el restore, el del root restaurado) |
+| `TSUKI_CONF_FILE` | ambos | Fuerza el fichero de configuración de usuario (por defecto `/etc/timeshift/uki-hooks.conf`) |
+| `TSUKI_PRUNE_OLD_UKIS` | backup | Forza `PRUNE_OLD_UKIS` (sobreescribe el fichero de configuración) |
+| `TSUKI_PRUNE_ESP_UKIS` | backup | Forza `PRUNE_ESP_UKIS` (sobreescribe el fichero de configuración) |
+| `TSUKI_PRUNE_UKIS` | restore | Forza `PRUNE_UKIS` (sobreescribe el fichero de configuración) |
+| `TSUKI_ESP_MIN_FREE_MB` | restore | Forza `ESP_MIN_FREE_MB` (sobreescribe el fichero de configuración) |
 
 `TS_SNAPSHOT_PATH` lo exporta Timeshift; el hook también lo acepta a mano.
 
@@ -486,7 +502,20 @@ Si las *user namespaces* estuvieran deshabilitadas, el test **falla** en lugar d
 
 Para el historial completo de cambios, ver [CHANGELOG.md](CHANGELOG.md).
 
-### v3.9 (Última versión)
+### v3.10 (Última versión)
+- **Configuración de usuario externa (`/etc/timeshift/uki-hooks.conf`).**
+  Las constantes `PRUNE_OLD_UKIS`, `PRUNE_ESP_UKIS`, `PRUNE_UKIS` y
+  `ESP_MIN_FREE_MB` se leen ahora desde `/etc/timeshift/uki-hooks.conf` en lugar de
+  escribirse en la cabecera de cada hook. Así `install.sh` (y el paquete AUR) pueden
+  actualizar los hooks sin sobrescribir los cambios manuales del usuario.
+  - `install.sh` instala `uki-hooks.conf` solo la primera vez; si ya existe, no lo toca.
+  - El PKGBUILD lo marca como `backup` para que pacman lo preserve si lo modificas.
+  - Orden de prioridad: variable de entorno `TSUKI_*` > fichero de configuración >
+    valor por defecto.
+  - Seams de prueba: `TSUKI_PRUNE_OLD_UKIS`, `TSUKI_PRUNE_ESP_UKIS`,
+    `TSUKI_PRUNE_UKIS`, `TSUKI_ESP_MIN_FREE_MB`, `TSUKI_CONF_FILE`.
+
+### v3.9
 - **Los hooks ya no tocan los UKIs de otra instalación Linux** (bug, pérdida de datos).
   La purga de la ESP (backup) y la poda y el chequeo de coherencia (restore) aceptaban
   cualquier `<32 hex>-<kver>.efi`. Con una ESP o XBOOTLDR compartida con otra distro

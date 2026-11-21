@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Restore Script (v3.9)
+# Timeshift UKI Hooks - Restore Script (v3.10)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -49,6 +49,18 @@ PRUNE_UKIS=true
 # mano mientras timeshift-autosnap lanza el backup hook) escriban a la vez.
 LOCK_FILE="${TSUKI_LOCK_FILE:-/run/lock/timeshift-uki-hooks.lock}"
 # ----------------------
+
+# --- Carga de configuracion de usuario ---
+# Valores de fábrica (arriba). Se sobrescriben por /etc/timeshift/uki-hooks.conf
+# si existe, y por variables de entorno TSUKI_* si se definen (tests/CI).
+CONF_FILE="${TSUKI_CONF_FILE:-/etc/timeshift/uki-hooks.conf}"
+if [ -f "$CONF_FILE" ]; then
+    # shellcheck source=/dev/null
+    . "$CONF_FILE"
+fi
+# Las variables de entorno TSUKI_* tienen la última palabra.
+ESP_MIN_FREE_MB="${TSUKI_ESP_MIN_FREE_MB:-$ESP_MIN_FREE_MB}"
+PRUNE_UKIS="${TSUKI_PRUNE_UKIS:-$PRUNE_UKIS}"
 
 log() {
     local level="$1"

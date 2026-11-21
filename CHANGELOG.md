@@ -4,6 +4,21 @@ Todas las versiones significativas de este proyecto. Formato basado en [Keep a C
 
 ---
 
+## [3.10] - 2026-11-20
+
+### Fixed
+- **Configuración de usuario externa (`/etc/timeshift/uki-hooks.conf`).**
+  Las constantes `PRUNE_OLD_UKIS`, `PRUNE_ESP_UKIS`, `PRUNE_UKIS` y
+  `ESP_MIN_FREE_MB` se leen ahora desde `/etc/timeshift/uki-hooks.conf` en lugar de
+  escribirse en la cabecera de cada hook. Así `install.sh` (y el paquete AUR) pueden
+  actualizar los hooks sin sobrescribir los cambios manuales del usuario.
+  - `install.sh` instala `uki-hooks.conf` solo la primera vez; si ya existe, no lo toca.
+  - El PKGBUILD lo marca como `backup` para que pacman lo preserve si lo modificas.
+  - Orden de prioridad: variable de entorno `TSUKI_*` > fichero de configuración >
+    valor por defecto.
+  - Seams de prueba: `TSUKI_PRUNE_OLD_UKIS`, `TSUKI_PRUNE_ESP_UKIS`,
+    `TSUKI_PRUNE_UKIS`, `TSUKI_ESP_MIN_FREE_MB`, `TSUKI_CONF_FILE`.
+
 ## [3.9] - 2026-11-20
 
 ### Fixed

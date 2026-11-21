@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Timeshift UKI Hooks - Instalador v3.9
+# Timeshift UKI Hooks - Instalador v3.10
 # Soporte universal: Arch, Debian, Fedora, openSUSE, Void, Gentoo, etc.
 #
 
@@ -165,11 +165,21 @@ install -Dm755 "$SCRIPT_DIR/hooks.d/backup/90-backup-uki" \
 install -Dm755 "$SCRIPT_DIR/hooks.d/restore/90-restore-uki" \
     /etc/timeshift/restore-hooks.d/90-restore-uki
 
+# Instalar fichero de configuracion de usuario (sin sobrescribir si ya existe).
+CONF_DEST="/etc/timeshift/uki-hooks.conf"
+if [ -f "$CONF_DEST" ]; then
+    echo "Configuracion existente conservada: $CONF_DEST"
+else
+    echo "Instalando configuracion de usuario en $CONF_DEST"
+    install -Dm644 "$SCRIPT_DIR/uki-hooks.conf" "$CONF_DEST"
+fi
+
 echo "Instalacion/Actualizacion a v${VERSION} completada correctamente."
 echo "Los hooks han sido instalados con nombres estandar para compatibilidad con run-parts."
 echo ""
-echo "Si editaste PRUNE_* u otras constantes en la cabecera de los hooks, tus"
-echo "cambios se conservan en el fichero .bak-${TS} generado arriba."
+echo "Configuracion: edita /etc/timeshift/uki-hooks.conf para ajustar PRUNE_* y"
+echo "ESP_MIN_FREE_MB sin que se pierdan al actualizar. El fichero de configuracion"
+echo "no se sobrescribe en futuras instalaciones."
 echo ""
 echo "Si no los instalas con el paquete (AUR: timeshift-uki-hooks-git), recuerda que"
 echo "install.sh deja los ficheros fuera del gestor de paquetes: una actualizacion"

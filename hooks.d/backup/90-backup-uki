@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Backup Script (v3.9)
+# Timeshift UKI Hooks - Backup Script (v3.10)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -55,6 +55,18 @@ PRUNE_ESP_UKIS=true
 # mano mientras timeshift-autosnap lanza el backup hook) escriban UKIs a la vez.
 LOCK_FILE="${TSUKI_LOCK_FILE:-/run/lock/timeshift-uki-hooks.lock}"
 # ----------------------
+
+# --- Carga de configuracion de usuario ---
+# Valores de fábrica (arriba). Se sobrescriben por /etc/timeshift/uki-hooks.conf
+# si existe, y por variables de entorno TSUKI_* si se definen (tests/CI).
+CONF_FILE="${TSUKI_CONF_FILE:-/etc/timeshift/uki-hooks.conf}"
+if [ -f "$CONF_FILE" ]; then
+    # shellcheck source=/dev/null
+    . "$CONF_FILE"
+fi
+# Las variables de entorno TSUKI_* tienen la última palabra.
+PRUNE_OLD_UKIS="${TSUKI_PRUNE_OLD_UKIS:-$PRUNE_OLD_UKIS}"
+PRUNE_ESP_UKIS="${TSUKI_PRUNE_ESP_UKIS:-$PRUNE_ESP_UKIS}"
 
 # Kernel en ejecucion. Se resuelve aqui (no dentro de compute_current_ukis)
 # porque prune_esp_stale_ukis tambien lo necesita y se ejecuta antes.
