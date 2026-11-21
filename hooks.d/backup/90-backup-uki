@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Backup Script (v3.8)
+# Timeshift UKI Hooks - Backup Script (v3.9)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -58,7 +58,30 @@ LOCK_FILE="${TSUKI_LOCK_FILE:-/run/lock/timeshift-uki-hooks.lock}"
 
 # Kernel en ejecucion. Se resuelve aqui (no dentro de compute_current_ukis)
 # porque prune_esp_stale_ukis tambien lo necesita y se ejecuta antes.
-CURRENT_KVER="$(uname -r)"
+# TSUKI_KVER / TSUKI_MODULES_DIR / TSUKI_MACHINE_ID: solo para tests/CI.
+CURRENT_KVER="${TSUKI_KVER:-$(uname -r)}"
+MODULES_DIR="${TSUKI_MODULES_DIR:-/usr/lib/modules}"
+
+# machine-id de ESTE sistema. Los UKIs de kernel-install se llaman
+# <machine-id>-<kver>.efi, y la ESP/XBOOTLDR puede compartirse con otra
+# instalacion Linux (otro machine-id). Los hooks solo gestionan los UKIs cuyo
+# prefijo coincide con este valor; el resto se trata como ajeno y no se toca.
+# Si no se puede determinar, no se poda nada (es preferible no borrar).
+MACHINE_ID="${TSUKI_MACHINE_ID:-$({ tr -d '[:space:]' < /etc/machine-id; } 2>/dev/null || true)}"
+[[ "$MACHINE_ID" =~ ^[0-9a-f]{32}$ ]] || MACHINE_ID=""
+
+# Temporales de la copia atomica (se borran siempre en el trap de salida).
+TMP_FILES=()
+
+# ¿Es $1 (nombre de fichero) un UKI versionado de ESTE sistema? Si lo es,
+# deja la version del kernel en UKI_KVER.
+own_uki_kver() {
+    UKI_KVER=""
+    [ -n "$MACHINE_ID" ] || return 1
+    [[ "$1" =~ ^${MACHINE_ID}-(.+)\.efi$ ]] || return 1
+    UKI_KVER="${BASH_REMATCH[1]}"
+    return 0
+}
 
 log() {
     local level="$1"
@@ -119,7 +142,7 @@ detect_uki_dir() {
             echo "$mnt"
             break
         fi
-    done)
+    done || true)
     if [ -n "$esp" ]; then
         echo "$esp/EFI/Linux"
         return 0
@@ -134,21 +157,25 @@ detect_uki_dir() {
 # momento de la snapshot. El preset clasico (arch-linux.efi) se conserva en
 # maquinas sin kernel-install si sigue existiendo en la ESP.
 compute_current_ukis() {
-    CURRENT_KVER="$(uname -r)"
     HAS_VERSIONED=false
     current_uki_files=()
     current_uki_names=()
 
     for uki in "${uki_files[@]}"; do
-        [[ "${uki##*/}" =~ ^[0-9a-f]{32}-.+\.efi$ ]] && HAS_VERSIONED=true
+        if own_uki_kver "${uki##*/}"; then
+            HAS_VERSIONED=true
+        fi
     done
 
     for uki in "${uki_files[@]}"; do
         local base="${uki##*/}"
 
-        if [[ "$base" =~ ^[0-9a-f]{32}-.+\.efi$ ]]; then
-            # UKI versionado: vigente solo si pertenece al kernel en ejecucion
-            [[ "$base" == *"-${CURRENT_KVER}.efi" ]] || continue
+        if own_uki_kver "$base"; then
+            # UKI versionado de este sistema: vigente solo si es del kernel en ejecucion
+            [ "$UKI_KVER" = "$CURRENT_KVER" ] || continue
+        elif [[ "$base" =~ ^[0-9a-f]{32}-.+\.efi$ ]]; then
+            # UKI versionado de OTRA instalacion (otro machine-id): no es nuestro
+            continue
         elif [ "$HAS_VERSIONED" = true ]; then
             # Con kernel-install el preset clasico (arch-linux.efi) es legacy
             continue
@@ -160,11 +187,15 @@ compute_current_ukis() {
 
     # Fallback: si no hay ningun UKI del kernel actual (p.ej. generacion
     # pendiente), no dejar el snapshot sin respaldo ni purgar lo existente
+    # (los UKIs versionados de otra instalacion nunca entran en el respaldo)
     if [ ${#current_uki_files[@]} -eq 0 ]; then
-        current_uki_files=("${uki_files[@]}")
-        current_uki_names=()
-        for uki in "${current_uki_files[@]}"; do
-            current_uki_names+=("${uki##*/}")
+        for uki in "${uki_files[@]}"; do
+            local base="${uki##*/}"
+            if ! own_uki_kver "$base" && [[ "$base" =~ ^[0-9a-f]{32}-.+\.efi$ ]]; then
+                continue
+            fi
+            current_uki_files+=("$uki")
+            current_uki_names+=("$base")
         done
     fi
 }
@@ -177,7 +208,7 @@ kernel_is_installed() {
     local kver="$1"
     [ -n "$kver" ] || return 1
     [ "$kver" = "$CURRENT_KVER" ] && return 0
-    [ -d "/usr/lib/modules/$kver" ] && return 0
+    [ -d "$MODULES_DIR/$kver" ] && return 0
     return 1
 }
 
@@ -192,6 +223,11 @@ prune_esp_stale_ukis() {
         return 0
     fi
 
+    if [ -z "$MACHINE_ID" ]; then
+        log "WARN" "No se pudo determinar el machine-id; no se poda la particion de arranque"
+        return 0
+    fi
+
     shopt -s nullglob
     local esp_ukis=("$UKI_DIR"/*.efi)
     shopt -u nullglob
@@ -199,54 +235,37 @@ prune_esp_stale_ukis() {
         return 0
     fi
 
-    # Solo con layout kernel-install hay UKIs versionados que podar. Sin ellos
-    # (preset clasico) no hay version en el nombre: no se toca nada.
-    local has_versioned=false
-    for uki in "${esp_ukis[@]}"; do
-        if [[ "${uki##*/}" =~ ^[0-9a-f]{32}-.+\.efi$ ]]; then
-            has_versioned=true
-            break
-        fi
-    done
-    if [ "$has_versioned" != true ]; then
-        return 0
-    fi
-
     # Dos fases: primero se decide QUE se podaria y solo despues se borra. La
     # guarda de supervivientes necesita el calculo completo antes de tocar
-    # ningun fichero.
-    local base kver pruned=0
+    # ningun fichero. Solo se consideran los UKIs de ESTE sistema (machine-id);
+    # los de otra instalacion que comparta la particion no se tocan nunca.
+    local base kver pruned=0 own=0 survivors=0
     local -A stale=()
     local -a to_prune=()
     for uki in "${esp_ukis[@]}"; do
         base="${uki##*/}"
-        [[ "$base" =~ ^[0-9a-f]{32}-(.+)\.efi$ ]] || continue
-        kver="${BASH_REMATCH[1]}"
+        own_uki_kver "$base" || continue
+        kver="$UKI_KVER"
+        own=$((own + 1))
         if kernel_is_installed "$kver"; then
+            survivors=$((survivors + 1))
             continue
         fi
         stale["$base"]="$kver"
         to_prune+=("$uki")
     done
-    if [ ${#to_prune[@]} -eq 0 ]; then
+    if [ "$own" -eq 0 ] || [ ${#to_prune[@]} -eq 0 ]; then
         return 0
     fi
 
     # Guarda conservadora: si el borrado dejaria la particion SIN ningun UKI
-    # versionado, lo mas probable es que el diagnostico sea erroneo (chroot de
-    # Live USB: el kernel en ejecucion es el del USB y no coincide con ningun
-    # UKI de la ESP; /usr/lib/modules vacio o sin montar). En ese caso no se
-    # poda nada: es preferible dejar UKIs obsoletos a quedarse sin arranque.
-    local survivors=0
-    for uki in "${esp_ukis[@]}"; do
-        base="${uki##*/}"
-        [[ "$base" =~ ^[0-9a-f]{32}-.+\.efi$ ]] || continue
-        if [ -z "${stale[$base]+x}" ]; then
-            survivors=$((survivors + 1))
-        fi
-    done
+    # versionado propio, lo mas probable es que el diagnostico sea erroneo
+    # (chroot de Live USB: el kernel en ejecucion es el del USB y no coincide
+    # con ningun UKI de la ESP; /usr/lib/modules vacio o sin montar). En ese
+    # caso no se poda nada: es preferible dejar UKIs obsoletos a quedarse sin
+    # arranque.
     if [ "$survivors" -eq 0 ]; then
-        log "WARN" "La purga dejaria $UKI_DIR sin ningun UKI versionado; no se poda nada (¿kernel en ejecucion ajeno al sistema o /usr/lib/modules sin montar?)"
+        log "WARN" "La purga dejaria $UKI_DIR sin ningun UKI versionado propio; no se poda nada (¿kernel en ejecucion ajeno al sistema o $MODULES_DIR sin montar?)"
         return 0
     fi
 
@@ -304,21 +323,37 @@ prune_stale_ukis() {
     shopt -u nullglob
 }
 
+# Escribe "$1.sha256" con el hash $2 de forma atomica (temporal + mv).
+write_sha() {
+    local target="$1.sha256" tmp
+    tmp=$(mktemp "$1.sha256.tmp_XXXXXX")
+    TMP_FILES+=("$tmp")
+    printf '%s\n' "$2" > "$tmp"
+    mv -f "$tmp" "$target"
+}
+
 # Copia los UKIs actuales de la ESP a un directorio destino.
 # Selectivo: solo copia los que cambiaron (comparacion SHA256 per-file).
-# $2 = "skip_prune": omitir purge de obsoletos (para la segunda llamada al snapshot,
-#   cuyo destino ya fue purgeado en la primera).
+# La purga de obsoletos se aplica SIEMPRE al destino que se recibe: el directorio
+# del snapshot es una copia del respaldo de la ejecucion ANTERIOR (el snapshot se
+# toma antes que este hook), asi que la purga del respaldo vivo no lo limpia.
+# Un UKI identico sin su .sha256 (o con uno distinto) se repara: el restore exige
+# el .sha256 y abortaria sin el.
 copy_ukis() {
     local dest="$1"
-    local skip_prune="${2:-}"
-    local count=0
+    local count=0 fixed=0
 
     if [ ! -d "$dest" ]; then
         mkdir -p "$dest"
     fi
 
-    # Limpiar archivos .bak huerfanos en destino
+    # Temporales huerfanos de una ejecucion anterior interrumpida
     shopt -s nullglob
+    for tmp_file in "$dest"/.tmp_* "$dest"/*.sha256.tmp_*; do
+        rm -f "$tmp_file"
+    done
+
+    # Limpiar archivos .bak huerfanos en destino
     for bak_file in "$dest"/*.bak.*.efi "$dest"/*.bak.efi "$dest"/*.bak.*.efi.sha256 "$dest"/*.bak.efi.sha256; do
         [ -f "$bak_file" ] || continue
         rm -f "$bak_file"
@@ -337,71 +372,61 @@ copy_ukis() {
     done
 
     # Purgar UKIs obsoletos que ya no corresponden al kernel actual
-    # (omitir en la segunda llamada al snapshot, cuyo destino ya fue purgeado)
-    if [ "$PRUNE_OLD_UKIS" = true ] && [ "$skip_prune" != "skip_prune" ]; then
+    if [ "$PRUNE_OLD_UKIS" = true ]; then
         prune_stale_ukis "$dest"
     fi
 
-    # Deteccion rapida: si todos los UKIs ya estan identicos, no tocar nada
-    local needs_backup=false
+    local uki basename current_sha dest_sha stored_sha temp_file temp_sha
     for uki in "${current_uki_files[@]}"; do
         [ -f "$uki" ] || continue
-        local basename="${uki##*/}"
+        basename="${uki##*/}"
 
         # Omitir archivos .bak (rotaciones viejas)
         if [[ "$basename" == *".bak."* || "$basename" == *".bak.efi" ]]; then
             continue
         fi
 
-        if [ -f "$dest/$basename" ]; then
-            local current_sha backup_sha
-            current_sha=$(sha256sum "$uki" | awk '{print $1}')
-            backup_sha=$(sha256sum "$dest/$basename" | awk '{print $1}')
-            if [ "$current_sha" == "$backup_sha" ]; then
-                continue
-            fi
-        fi
-        needs_backup=true
-        break
-    done
-
-    if [ "$needs_backup" = false ]; then
-        log "INFO" "Respaldo en $dest actualizado (UKIs identicos). Sin cambios."
-        return 0
-    fi
-
-    log "INFO" "Iniciando respaldo de UKIs en $dest"
-
-    for uki in "${current_uki_files[@]}"; do
-        [ -f "$uki" ] || continue
-        local basename="${uki##*/}"
-
-        # Omitir archivos .bak (rotaciones viejas)
-        if [[ "$basename" == *".bak."* || "$basename" == *".bak.efi" ]]; then
-            continue
-        fi
-
-        local current_sha backup_sha
         current_sha=$(sha256sum "$uki" | awk '{print $1}')
+
         if [ -f "$dest/$basename" ]; then
-            backup_sha=$(sha256sum "$dest/$basename" | awk '{print $1}')
-            if [ "$current_sha" == "$backup_sha" ]; then
+            dest_sha=$(sha256sum "$dest/$basename" | awk '{print $1}')
+            if [ "$current_sha" = "$dest_sha" ]; then
+                stored_sha=$(awk 'NR==1 {print $1}' "$dest/$basename.sha256" 2>/dev/null || true)
+                if [ "$stored_sha" != "$current_sha" ]; then
+                    write_sha "$dest/$basename" "$current_sha"
+                    log "INFO" "Reparado .sha256 de $basename en $dest"
+                    fixed=$((fixed + 1))
+                fi
                 continue
             fi
         fi
 
-        if cp --preserve=all "$uki" "$dest/$basename"; then
-            echo "$current_sha" > "$dest/$basename.sha256"
-            log "INFO" "Respaldo exitoso: $basename -> $dest"
-            count=$((count + 1))
-        else
+        # Copia atomica: temporal SIN sufijo .efi en el mismo directorio + mv.
+        # Una copia a medias nunca queda con el nombre del UKI.
+        temp_file=$(mktemp "$dest/.tmp_XXXXXXXX")
+        TMP_FILES+=("$temp_file")
+        if ! cp --preserve=all "$uki" "$temp_file"; then
             log "ERROR" "Fallo en copia de: $basename -> $dest"
             return 1
         fi
+        temp_sha=$(sha256sum "$temp_file" | awk '{print $1}')
+        if [ "$temp_sha" != "$current_sha" ]; then
+            log "ERROR" "La copia de $basename no coincide con el original (¿UKI modificado durante la copia?)"
+            return 1
+        fi
+        if ! mv -f "$temp_file" "$dest/$basename"; then
+            log "ERROR" "Fallo al mover $basename a $dest"
+            return 1
+        fi
+        write_sha "$dest/$basename" "$current_sha"
+        log "INFO" "Respaldo exitoso: $basename -> $dest"
+        count=$((count + 1))
     done
 
     if [ "$count" -gt 0 ]; then
         log "INFO" "Finalizado: $count UKIs respaldados en $dest"
+    elif [ "$fixed" -eq 0 ]; then
+        log "INFO" "Respaldo en $dest actualizado (UKIs identicos). Sin cambios."
     fi
     return 0
 }
@@ -426,6 +451,16 @@ fi
 # convertirlas en un exit 130 deja que los traps de salida (si los hubiera) y el
 # cierre del fd 9 se ejecuten de forma ordenada.
 trap 'exit 130' INT TERM HUP
+cleanup_tmp() {
+    local f
+    if [ ${#TMP_FILES[@]} -gt 0 ]; then
+        for f in "${TMP_FILES[@]}"; do
+            [ -e "$f" ] && rm -f "$f" 2>/dev/null
+        done
+    fi
+    return 0
+}
+trap cleanup_tmp EXIT
 
 mkdir -p "$BACKUP_DIR"
 
@@ -485,7 +520,7 @@ fi
 
 if [ -n "$SNAPSHOT_BACKUP_DIR" ]; then
     log "INFO" "Escribiendo UKIs dentro del snapshot (TS_SNAPSHOT_PATH): $SNAPSHOT_BACKUP_DIR"
-    if ! copy_ukis "$SNAPSHOT_BACKUP_DIR" "skip_prune"; then
+    if ! copy_ukis "$SNAPSHOT_BACKUP_DIR"; then
         log "ERROR" "Fallo al escribir los UKIs dentro del snapshot"
         exit 1
     fi

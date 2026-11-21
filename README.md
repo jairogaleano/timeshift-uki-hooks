@@ -1,4 +1,4 @@
-# Timeshift UKI Hooks v3.8.2
+# Timeshift UKI Hooks v3.9
 
 Sistema de hooks para **Timeshift** que respalda y restaura imágenes **UKI (Unified Kernel Images)** en sistemas con **Btrfs + Secure Boot**.
 
@@ -42,7 +42,7 @@ Este proyecto sincroniza los UKIs con los snapshots de Btrfs mediante hooks:
    - Respalda UKIs en `/etc/timeshift/uki-backup/`
    - Escribe los UKIs **dentro del snapshot recién creado** vía `TS_SNAPSHOT_PATH` (Btrfs: `@/etc/timeshift/uki-backup/`, rsync: `localhost/etc/timeshift/uki-backup/` — el árbol rsync de Timeshift vive en `<snapshot>/localhost/`), dejándolo **autocontenido**
    - **Selectivo**: solo copia UKIs que cambiaron (comparación SHA256 per-file)
-   - **Purga UKIs obsoletos** (`PRUNE_OLD_UKIS=true`): cada snapshot viaja solo con el UKI del kernel actual (`uname -r`); elimina versiones anteriores y el preset clásico `arch-linux.efi` en máquinas con `kernel-install`
+   - **Purga UKIs obsoletos** (`PRUNE_OLD_UKIS=true`): cada snapshot viaja solo con el UKI del kernel actual (`uname -r`): la purga se aplica tanto al respaldo vivo como al directorio escrito dentro del snapshot; elimina versiones anteriores y el preset clásico `arch-linux.efi` en máquinas con `kernel-install`
    - **Purga la partición de arranque** (`PRUNE_ESP_UKIS=true`, v3.5): elimina los UKIs versionados cuyo kernel ya no está instalado. `kernel-install` **no** poda, así que sin esto `/boot/EFI/Linux` acumula UKIs de kernels desinstalados y cada uno se convierte en una entrada más del menú de arranque de systemd-boot
    - Limpia archivos `.bak` y `.sha256` huérfanos automáticamente
 
@@ -328,6 +328,9 @@ Variables de entorno (para pruebas; no hace falta tocarlas en producción):
 | `TSUKI_UKI_DIR` | detección automática | Fuerza el directorio de UKIs de origen |
 | `TSUKI_BACKUP_DIR` | `/etc/timeshift/uki-backup` | Fuerza el directorio de respaldo |
 | `TSUKI_LOG_FILE` | `/var/log/timeshift.log` | Fuerza el archivo de log |
+| `TSUKI_MACHINE_ID` | ambos | Fuerza el machine-id (32 hex) con el que se reconocen los UKIs propios |
+| `TSUKI_KVER` | backup | Fuerza la versión del kernel "en ejecución" (en vez de `uname -r`) |
+| `TSUKI_MODULES_DIR` | ambos | Fuerza el directorio de módulos (por defecto `/usr/lib/modules`; en el restore, el del root restaurado) |
 
 `TS_SNAPSHOT_PATH` lo exporta Timeshift; el hook también lo acepta a mano.
 
@@ -376,6 +379,30 @@ Si el hook aborta con `No se encontro la particion de arranque`, casi siempre es
 
 ---
 
+## 🧬 UKIs propios y ajenos (ESP compartida)
+
+Los hooks solo **gestionan** (respaldan, podan, comprueban) los UKIs cuyo nombre empieza por el `machine-id` de **este** sistema:
+
+```
+<machine-id de este sistema>-<kver>.efi    → gestionado
+<otro machine-id>-<kver>.efi               → ajeno: no se toca nunca
+arch-linux.efi, rescue.efi, …              → sin versión: no se poda (como antes)
+```
+
+Esto importa cuando la ESP o la partición XBOOTLDR **se comparte con otra instalación Linux** (dual boot de dos distros, un USB persistente, etc.). Hasta v3.8 esos UKIs se trataban como "de un kernel desinstalado" y se borraban, y el restore podía abortar por "incoherencia".
+
+- **Backup**: el `machine-id` se lee de `/etc/machine-id`.
+- **Restore**: se lee del root que se **acaba de restaurar** (`<snapshot>/@/etc/machine-id` o `/etc/machine-id` en chroot), no del sistema vivo.
+- Si no se puede determinar (fichero ausente o con formato inválido), los hooks **no podan nada** y lo dicen en el log (`WARN`): es preferible dejar UKIs obsoletos a borrar los de otro sistema.
+
+Comprobación rápida:
+```bash
+cat /etc/machine-id
+ls /boot/EFI/Linux/            # los de este sistema empiezan por ese id
+```
+
+---
+
 ## 🔒 Seguridad
 
 - ✅ **Integridad**: Verificación SHA256 obligatoria antes de restaurar.
@@ -399,6 +426,8 @@ El restore hook, antes de copiar, calcula el SHA-256 de cada UKI respaldado y lo
 
 Los `.sha256` huérfanos (sin su UKI asociado) se limpian automáticamente en cada ejecución del hook.
 
+Si el UKI del respaldo es idéntico pero su `.sha256` falta o no coincide, el siguiente backup lo **repara** sin recopiar el UKI.
+
 ---
 
 ## 🔧 Depuración e Integración de Logs
@@ -418,6 +447,9 @@ Este proyecto se integra directamente con el sistema de registros de **Timeshift
 | Hooks no se ejecutan | Permisos incorrectos | `chmod +x /etc/timeshift/*-hooks.d/90-*-uki` |
 | Tras restaurar, el sistema no arranca o el UKI no está donde debería | El restore hook eligió otra vfat montada (dual-boot) | Ver [Detección de la partición de arranque](#-detección-de-la-partición-de-arranque) |
 | El menú de arranque ofrece kernels viejos | UKIs acumulados en la ESP | Con v3.5 se purgan solos en el siguiente snapshot; para hacerlo ya: `rm` manual de `/boot/EFI/Linux/<machine-id>-<kver>.efi` de kernels ya desinstalados |
+| Faltan UKIs de otra distro en la ESP tras un snapshot | Versión ≤ 3.8 con ESP compartida | Actualizar a v3.9; restaurar esos UKIs desde su sistema (`kernel-install add …`) |
+| `No se pudo determinar el machine-id; no se poda nada` | `/etc/machine-id` vacío o ausente | `systemd-machine-id-setup` y repetir; hasta entonces la ESP no se poda |
+| `Espacio insuficiente` con UKIs nuevos por copiar | ESP sin espacio para UKI + margen | Liberar espacio o bajar `ESP_MIN_FREE_MB`; desde v3.9 no salta si no hay nada que escribir |
 
 > Si tu ESP se monta con `dmask=0077` (opción habitual de `systemd-fstab-generator` en vfat), los UKIs quedan en `700` y **solo root puede leerlos**, también dentro de `/etc/timeshift/uki-backup/`. No afecta a los hooks (se ejecutan como root), pero impide comprobarlos a mano con tu usuario normal.
 
@@ -440,6 +472,10 @@ Cada `push` a `main` ejecuta [`.github/workflows/ci.yml`](.github/workflows/ci.y
 
 **`tests/boot-partition.sh`** cubre el restore hook, que hasta v3.5 no tenía ninguna cobertura. La clave es que **no necesita una ESP real ni privilegios**: se re-ejecuta dentro de un namespace de usuario (`unshare -r -m -p -f`) y levanta un chroot mínimo con *bind mounts* de `/usr`, `/dev`, `/sys` y `/proc`. Dentro, `/boot` y `/efi` se pueden montar o dejar como directorios planos, así que se ejercita el código de producción tal cual, sin variables de entorno ni *seams* que solo usen los tests. Cubre 12 casos (A–L): los cuatro *layouts* de partición con UKIs en `/boot` y/o `/efi`, los dos escenarios de dual-boot con la partición de los UKIs **sin montar** (justo los que fallaban antes del fix), el caso "ninguna sirve", tres de verificación de checksum y tres de regresión del prune (nombres sin versión, tuberías mayores de 64 KiB y `TS_SNAPSHOT_PATH` no reconocido).
 
+**`tests/backup-multiboot.sh`** (11 comprobaciones) prueba el backup hook con UKIs de otra instalación en la ESP, la purga del snapshot (sin `skip_prune`) y la reparación de `.sha256` ausente o erróneo.
+
+**`tests/restore-multiboot.sh`** (6 comprobaciones, en user+mount namespace) prueba el restore hook con UKIs de otra instalación en la ESP compartida y el chequeo de espacio cuando no hay nada que escribir.
+
 Si las *user namespaces* estuvieran deshabilitadas, el test **falla** en lugar de saltarse en silencio: un test que se salta solo no es cobertura.
 
 > ⚠️ **La CI corre en `ubuntu-latest` y eso no verifica ninguna distro.** Es el único entorno donde el proyecto se ejecuta de forma automatizada, y no es el de producción: los hooks corren dentro de un *chroot* simulado, sobre un árbol de ficheros, nunca contra una ESP de verdad ni contra un arranque real. La CI no cuenta como verificación en hardware (ver [la limitación conocida](#limitación-conocida-el-soporte-multi-distribución-no-está-verificado-en-hardware-real)); de hecho, los dos fallos que corrigió el `chroot` de `boot-partition.sh` eran **típicos de Ubuntu** (`/lib64` como directorio real en vez de symlink, y `awk` desapareciendo al no existir `/etc/alternatives`).
@@ -450,20 +486,44 @@ Si las *user namespaces* estuvieran deshabilitadas, el test **falla** en lugar d
 
 Para el historial completo de cambios, ver [CHANGELOG.md](CHANGELOG.md).
 
-### v3.8.2 (Última versión)
-- **Lote 3 de la revisión (2026-11-20):**
-  - **Restore: todos los checksums se verifican ANTES de escribir nada en la ESP**. `.sha256` obligatorio; sin él se aborta. Copia atómica (`cp` al temporal + `sha256sum` del temporal + `sync -f` + `mv`) y log de trazabilidad `Checksum verificado para <UKI>`.
-  - **Restore: pruning por módulos del root restaurado** (no por respaldo). Conserva un UKI versionado si y sólo si existe `<MODULES_DIR>/<kver>` en el root que se va a arrancar; poda los que no tienen módulos y conserva los sin versión (`rescue.efi`, `arch-linux.efi`). Guarda de supervivientes: no poda si dejaría la ESP sin ningún UKI versionado.
-  - **Restore: comprobación de coherencia post-restore**. Falla si algún UKI versionado queda sin módulos en el root restaurado.
-  - **Exclusión mutua con `flock`** en ambos hooks: si otro proceso escribe UKIs, el backup se omite y el restore aborta. Nunca tocan la ESP a la vez.
-  - Se elimina `detect_chroot()` (ruidoso y sin efecto real).
-  - `tests/boot-partition.sh` añade el caso K (pruning por módulos) y H ahora fuerza una copia real con `.sha256` en formato `sha256sum`.
-- **El prune del restore borraba `.efi` ajenos a `kernel-install`** (`arch-linux.efi`, `rescue.efi`…) que el snapshot puede no contener por diseño. Ahora solo poda nombres versionados (`<machine-id>-<kver>.efi`) y solo si el snapshot trae al menos uno.
-- **La purga de la ESP podía vaciarla en un chroot de Live USB** o con `/usr/lib/modules` sin montar: la única red de seguridad era `uname -r`. Ahora trabaja en dos fases y **no poda nada si el borrado dejaría la partición sin ningún UKI versionado** (avisa con `WARN`).
-- **El restore podía dejar la partición de arranque montada** si abortaba antes de restaurar: el cleanup solo actuaba con `RESTORE_STARTED=true`. Ahora todo lo montado por el script se acumula en `MOUNTED_BY_US=()` y el `trap EXIT` lo desmonta siempre.
-- **`install.sh` corregido (v3.8.2):** respalda hooks previos antes de sobrescribir, copia atómica con `install -Dm755`, `awk`/`date`/`mktemp`/`stat` declarados como dependencias, no instala paquetes sin terminal, `SCRIPT_DIR` robusto bajo `pkexec`.
-- **Un `TS_SNAPSHOT_PATH` no reconocido caía en silencio al respaldo del sistema vivo** (root viejo con UKI nuevo = no arranca). Ahora **aborta** con un `ERROR` en vez de adivinar.
-- **Tests ampliados a 12 casos** en `tests/boot-partition.sh` (J: `rescue.efi` sobrevive al prune; K: >64 KiB de tubería sin podar; L: `TS_SNAPSHOT_PATH` no reconocido aborta) y **`[6/7]`/`[7/7]`** en `tests/smoke.sh`. Verificado en rojo/verde: con el idioma antiguo el caso K borra 63 UKIs.
+### v3.9 (Última versión)
+- **Los hooks ya no tocan los UKIs de otra instalación Linux** (bug, pérdida de datos).
+  La purga de la ESP (backup) y la poda y el chequeo de coherencia (restore) aceptaban
+  cualquier `<32 hex>-<kver>.efi`. Con una ESP o XBOOTLDR compartida con otra distro
+  (otro `machine-id`), sus UKIs no tenían `/usr/lib/modules/<kver>` en este sistema y se
+  borraban como "kernel desinstalado". Ahora solo se gestionan los UKIs cuyo prefijo es el
+  `machine-id` de **este** sistema (backup: `/etc/machine-id`; restore: el del root
+  restaurado). Si no se puede determinar, **no se poda nada**. Los UKIs ajenos tampoco
+  entran en el respaldo.
+- **El directorio del snapshot se purga siempre** (backup). Se omitía la purga con
+  `skip_prune` bajo la premisa de que "ya se había purgado", pero lo purgado era el
+  respaldo vivo; el directorio del snapshot es una copia de la ejecución anterior. Un
+  snapshot podía viajar con UKIs de kernels viejos.
+- **`.sha256` ausente o erróneo con UKI idéntico ya no deja un respaldo irrestaurable**
+  (backup). El restore exige el `.sha256` y abortaba si faltaba. Ahora se repara en la
+  siguiente ejecución, aunque el UKI no haya cambiado.
+- **Copia atómica en el respaldo** (backup): temporal sin sufijo `.efi` + `mv`, con
+  verificación del temporal y `.sha256` escrito también de forma atómica. Los temporales
+  huérfanos se limpian al salir y al empezar.
+- **El restore ya no aborta por falta de margen cuando no tiene nada que escribir**: con
+  la ESP casi llena y todos los UKIs idénticos, el margen de `ESP_MIN_FREE_MB` bloqueaba
+  una restauración que no necesitaba espacio.
+- **ESP completamente llena (0 MB libres)** ya no se interpreta como "espacio
+  desconocido": se usa un centinela `-1` para el caso desconocido.
+- `findmnt | while … break` con `pipefail` ya no puede abortar por SIGPIPE (`|| true`).
+- **Tests nuevos**: `tests/backup-multiboot.sh` (11 comprobaciones) y
+  `tests/restore-multiboot.sh` (6 comprobaciones, en user+mount namespace).
+- Seams de prueba nuevos en el backup: `TSUKI_KVER`, `TSUKI_MODULES_DIR`,
+  `TSUKI_MACHINE_ID` (este último también en el restore).
+
+### v3.8.2
+- **install.sh: ya no pisa la configuración del usuario.** Antes de sobrescribir, respalda los hooks previos a `<hook>.bak-<fecha-hora>` (conserva cambios manuales en `PRUNE_*` / `TSUKI_*`).
+- **install.sh: copia atómica con `install -Dm755`** en lugar de `cp` + `chmod` separados; si falla la copia no queda sin hook.
+- **install.sh: `awk`, `date`, `mktemp`, `stat` añadidos a `DEP_PKG`** (ya se usaban en install.sh y en los hooks, pero no estaban declarados).
+- **install.sh: no instala paquetes sin terminal.** Si falta una dependencia y no hay TTY, aborta pidiendo instalación manual en lugar de asumir "S".
+- **install.sh: `SCRIPT_DIR` robusto con `readlink -f "${BASH_SOURCE[0]}"`** para que funcione bajo `pkexec` (que cambia el cwd).
+- **install.sh: shebang portable `#!/usr/bin/env bash`** y `set -euo pipefail`.
+- **Erratas del README:** "ninguna partición candidata" → "no hay ninguna partición candidata"; "eliminas dos afirmaciones" → "se eliminaron dos afirmaciones".
 
 ### v3.6
 - **El restore hook elegía la partición de arranque equivocada** (bug, no solo fragilidad). Aceptaba el **primer mountpoint** de `/boot`, `/efi`, `/boot/efi` sin comprobar nada y creaba el destino con `mkdir -p`. Con dos vfat montadas y solo una con UKIs (dual-boot), si la partición correcta no estaba montada, escribía los UKIs en la otra y —con `PRUNE_UKIS=true`— además borraba de ella los `.efi` que no estuvieran en el respaldo. El `mkdir -p` hacía que el error quedara "confirmado". Ahora una partición solo es candidata si está montada y tiene `EFI/Linux`, y si no hay ninguna el hook **aborta con un error claro** en vez de adivinar. Era justo lo que documentamos como limitación en v3.5.

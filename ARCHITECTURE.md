@@ -168,6 +168,24 @@ resolve_esp_mount()
      copy_ukis($TS_SNAPSHOT_PATH/.../uki-backup)  [skip_prune]
 ```
 
+
+---
+
+## Identidad de los UKIs (v3.9)
+
+La unidad de pertenencia es el **machine-id**, no el patrón del nombre. Un UKI es "propio" si `basename` = `^<machine-id>-(.+)\.efi$`. Todas las decisiones destructivas (purga de ESP, purga de respaldos, poda del restore, comprobación de coherencia) pasan por la misma función `own_uki_kver()`, duplicada en ambos hooks (no comparten código por diseño: cada hook debe poder ejecutarse solo desde un chroot). Cualquier cambio debe hacerse en los dos.
+
+- **Backup**: el `machine-id` se lee de `/etc/machine-id`.
+- **Restore**: se lee del root que se **acaba de restaurar** (`<snapshot>/@/etc/machine-id` o `/etc/machine-id` en chroot), no del sistema vivo.
+- Si no se puede determinar (fichero ausente o con formato inválido), los hooks **no podan nada** y lo dicen en el log (`WARN`): es preferible dejar UKIs obsoletos a borrar los de otro sistema.
+
+## Invariantes del respaldo (v3.9)
+
+1. El `.sha256` se escribe **después** de que el UKI esté completo en su sitio.
+2. Un UKI idéntico con `.sha256` ausente o distinto se repara; nunca se deja así.
+3. El directorio del snapshot es una **copia previa** del respaldo vivo, no el mismo directorio: se purga por separado.
+4. Ningún fichero con nombre `*.efi` existe en el destino salvo copias completas.
+
 ---
 
 ## Resumen

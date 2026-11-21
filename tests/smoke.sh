@@ -53,6 +53,7 @@ run_backup_to() {
            TSUKI_BACKUP_DIR="$2" \
            TSUKI_LOG_FILE="$LOG" \
            TSUKI_LOCK_FILE="$TMP/uki.lock" \
+           TSUKI_MACHINE_ID="$MID" \
            TS_SNAPSHOT_PATH="$3"
     # El hook escribe cada mensaje a stdout Y al fichero de log. Aqui solo
     # interesa el fichero (assert_log lo lee de $LOG), asi que se silencia
@@ -167,7 +168,7 @@ run_backup_to "$ESP_GUARD" "$BACKUP_GUARD" "$TMP/snap-invalido"
 echo "[7/7] sin UKI del kernel en ejecucion: la guarda impide vaciar la ESP"
 assert_file "$ESP_GUARD/${MID}-${KVER_OLD}.efi"
 assert_file "$ESP_GUARD/${MID}-${KVER_GONE}.efi"
-assert_log "sin ningun UKI versionado; no se poda nada"
+assert_log "sin ningun UKI versionado propio; no se poda nada"
 if grep -qE "Pruned UKI de la particion|Purgados [0-9]+ UKI" "$LOG"; then
     fail "la guarda de supervivientes no impidio la purga"
 fi

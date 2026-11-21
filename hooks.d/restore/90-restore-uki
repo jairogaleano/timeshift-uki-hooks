@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Restore Script (v3.8)
+# Timeshift UKI Hooks - Restore Script (v3.9)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -98,6 +98,25 @@ BACKUP_DIR="${TSUKI_BACKUP_DIR:-${BACKUP_DIR:-/etc/timeshift/uki-backup}}"
 # Un UKI versionado solo puede arrancar si existe <MODULES_DIR>/<kver>.
 # Override de tests/CI: TSUKI_MODULES_DIR.
 MODULES_DIR="${TSUKI_MODULES_DIR:-${ROOT}/usr/lib/modules}"
+
+# machine-id del root RESTAURADO (el que se va a arrancar). Los UKIs de
+# kernel-install se llaman <machine-id>-<kver>.efi y la ESP/XBOOTLDR puede
+# compartirse con otra instalacion Linux (otro machine-id): este hook solo poda
+# y comprueba los UKIs de ESTE sistema; los ajenos no se tocan nunca. Si no se
+# puede determinar, no se poda nada ni se comprueba la coherencia.
+# Override de tests/CI: TSUKI_MACHINE_ID.
+MACHINE_ID="${TSUKI_MACHINE_ID:-$({ tr -d '[:space:]' < "${ROOT}/etc/machine-id"; } 2>/dev/null || true)}"
+[[ "$MACHINE_ID" =~ ^[0-9a-f]{32}$ ]] || MACHINE_ID=""
+
+# ¿Es $1 (nombre de fichero) un UKI versionado de ESTE sistema? Si lo es,
+# deja la version del kernel en UKI_KVER.
+own_uki_kver() {
+    UKI_KVER=""
+    [ -n "$MACHINE_ID" ] || return 1
+    [[ "$1" =~ ^${MACHINE_ID}-(.+)\.efi$ ]] || return 1
+    UKI_KVER="${BASH_REMATCH[1]}"
+    return 0
+}
 
 # --- Exclusion mutua ---
 # flock -n (no bloqueante): si otro proceso mantiene el bloqueo, el restore
@@ -217,7 +236,7 @@ resolve_esp_mount() {
             echo "$mnt"
             break
         fi
-    done)
+    done || true)
     if [ -n "$esp" ] && [ -d "$esp" ]; then
         echo "$esp"
         return 0
@@ -355,7 +374,8 @@ done
 # (bloques libres * tamano de bloque), con df -Pk como respaldo; la expresion
 # anterior `esp_avail_mb=$(( ... )) 2>/dev/null || ...` no capturaba el error
 # del builtin (la redireccion aplica al builtin, no a la sustitucion).
-esp_avail_mb=0
+# -1 = desconocido. 0 es un valor valido (ESP completamente llena).
+esp_avail_mb=-1
 fs_info=$(stat -f -c '%a %S' "$TARGET_MNT" 2>/dev/null || true)
 if [ -n "$fs_info" ]; then
     avail_blocks="${fs_info%% *}"
@@ -364,7 +384,7 @@ if [ -n "$fs_info" ]; then
         esp_avail_mb=$(( avail_blocks * block_size / 1048576 ))
     fi
 fi
-if [ "$esp_avail_mb" -eq 0 ]; then
+if [ "$esp_avail_mb" -lt 0 ]; then
     df_avail_kb=$(df -Pk "$TARGET_MNT" 2>/dev/null | awk 'NR==2 {print $4}' || true)
     if [[ "$df_avail_kb" =~ ^[0-9]+$ ]]; then
         esp_avail_mb=$(( df_avail_kb / 1024 ))
@@ -383,7 +403,11 @@ required_mb=$(( esp_needed_mb + ESP_MIN_FREE_MB ))
 # Pico de ocupacion: el temporal nuevo convive con el UKI viejo hasta el mv
 # (rename atomico), asi que hace falta el tamano del nuevo + el margen. El
 # viejo ya esta descontado del espacio libre actual.
-if [ "$esp_avail_mb" -eq 0 ]; then
+# Si no hay nada que escribir (todo identico) no se exige margen: abortar aqui
+# bloquearia un restore que no necesita espacio.
+if [ ${#to_copy[@]} -eq 0 ]; then
+    log "INFO" "Nada que escribir en $TARGET_MNT; se omite la comprobacion de espacio."
+elif [ "$esp_avail_mb" -lt 0 ]; then
     log "WARN" "No se pudo determinar el espacio libre en $TARGET_MNT; se continua sin comprobacion."
 elif [ "$esp_avail_mb" -lt "$required_mb" ]; then
     log "ERROR" "Espacio insuficiente en $TARGET_MNT: ${esp_avail_mb}MB libres, se necesitan ~${required_mb}MB (${esp_needed_mb}MB de UKIs + ${ESP_MIN_FREE_MB}MB de margen)."
@@ -444,7 +468,9 @@ done
 # los kernels instalados aunque no esten en el respaldo y se eliminan los de
 # kernels que ya no existen.
 pruned_count=0
-if [ "$PRUNE_UKIS" = true ]; then
+if [ "$PRUNE_UKIS" = true ] && [ -z "$MACHINE_ID" ]; then
+    log "WARN" "No se pudo determinar el machine-id del root restaurado; no se poda nada."
+elif [ "$PRUNE_UKIS" = true ]; then
     log "INFO" "Pruning: podando UKIs de $UKI_DIR sin modulos en $MODULES_DIR..."
 
     shopt -s nullglob
@@ -459,15 +485,17 @@ if [ "$PRUNE_UKIS" = true ]; then
         [ -f "$existing" ] || continue
         base="${existing##*/}"
 
-        # Solo se podan nombres versionados (<machine-id>-<kver>.efi), el unico
-        # layout que gestiona kernel-install. Cualquier otro .efi (arch-linux.efi,
-        # rescue.efi, etc.) se conserva: borrarlo podria dejar el sistema sin una
-        # entrada de arranque que el snapshot no contiene por diseno.
-        if [[ ! "$base" =~ ^[0-9a-f]{32}-(.+)\.efi$ ]]; then
-            log "INFO" "Se conserva UKI sin version en el nombre: $base"
+        # Solo se podan los UKIs versionados DE ESTE SISTEMA
+        # (<este-machine-id>-<kver>.efi), el layout que gestiona kernel-install.
+        # Cualquier otro .efi se conserva: sin version (arch-linux.efi,
+        # rescue.efi, etc.) borrarlo podria dejar el sistema sin una entrada de
+        # arranque que el snapshot no contiene por diseno; y con otro machine-id
+        # pertenece a otra instalacion que comparte la particion.
+        if ! own_uki_kver "$base"; then
+            log "INFO" "Se conserva UKI que no es de este sistema (sin version o de otro machine-id): $base"
             continue
         fi
-        kver="${BASH_REMATCH[1]}"
+        kver="$UKI_KVER"
 
         if [ -d "$MODULES_DIR/$kver" ]; then
             survivors=$((survivors + 1))
@@ -512,8 +540,8 @@ if [ -d "$MODULES_DIR" ]; then
     for existing in "$UKI_DIR"/*.efi; do
         [ -f "$existing" ] || continue
         base="${existing##*/}"
-        [[ "$base" =~ ^[0-9a-f]{32}-(.+)\.efi$ ]] || continue
-        kver="${BASH_REMATCH[1]}"
+        own_uki_kver "$base" || continue
+        kver="$UKI_KVER"
         if [ -d "$MODULES_DIR/$kver" ]; then
             coherent=$((coherent + 1))
         else

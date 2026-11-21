@@ -4,6 +4,38 @@ Todas las versiones significativas de este proyecto. Formato basado en [Keep a C
 
 ---
 
+## [3.9] - 2026-11-20
+
+### Fixed
+- **Los hooks ya no tocan los UKIs de otra instalación Linux** (bug, pérdida de datos).
+  La purga de la ESP (backup) y la poda y el chequeo de coherencia (restore) aceptaban
+  cualquier `<32 hex>-<kver>.efi`. Con una ESP o XBOOTLDR compartida con otra distro
+  (otro `machine-id`), sus UKIs no tenían `/usr/lib/modules/<kver>` en este sistema y se
+  borraban como "kernel desinstalado". Ahora solo se gestionan los UKIs cuyo prefijo es el
+  `machine-id` de **este** sistema (backup: `/etc/machine-id`; restore: el del root
+  restaurado). Si no se puede determinar, **no se poda nada**. Los UKIs ajenos tampoco
+  entran en el respaldo.
+- **El directorio del snapshot se purga siempre** (backup). Se omitía la purga con
+  `skip_prune` bajo la premisa de que "ya se había purgado", pero lo purgado era el
+  respaldo vivo; el directorio del snapshot es una copia de la ejecución anterior. Un
+  snapshot podía viajar con UKIs de kernels viejos.
+- **`.sha256` ausente o erróneo con UKI idéntico ya no deja un respaldo irrestaurable**
+  (backup). El restore exige el `.sha256` y abortaba si faltaba. Ahora se repara en la
+  siguiente ejecución, aunque el UKI no haya cambiado.
+- **Copia atómica en el respaldo** (backup): temporal sin sufijo `.efi` + `mv`, con
+  verificación del temporal y `.sha256` escrito también de forma atómica. Los temporales
+  huérfanos se limpian al salir y al empezar.
+- **El restore ya no aborta por falta de margen cuando no tiene nada que escribir**: con
+  la ESP casi llena y todos los UKIs idénticos, el margen de `ESP_MIN_FREE_MB` bloqueaba
+  una restauración que no necesitaba espacio.
+- **ESP completamente llena (0 MB libres)** ya no se interpreta como "espacio
+  desconocido": se usa un centinela `-1` para el caso desconocido.
+- `findmnt | while … break` con `pipefail` ya no puede abortar por SIGPIPE (`|| true`).
+- **Tests nuevos**: `tests/backup-multiboot.sh` (11 comprobaciones) y
+  `tests/restore-multiboot.sh` (6 comprobaciones, en user+mount namespace).
+- Seams de prueba nuevos en el backup: `TSUKI_KVER`, `TSUKI_MODULES_DIR`,
+  `TSUKI_MACHINE_ID` (este último también en el restore).
+
 ## [3.8.2] - 2026-11-20
 
 ### Fixed

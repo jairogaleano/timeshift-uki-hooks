@@ -332,7 +332,7 @@ rc=$(run_restore)
 [ "$rc" -eq 0 ] || fail "caso J: se esperaba exito, rc=$rc"
 [ -f "$TMP/src-boot/EFI/Linux/rescue.efi" ] \
     || fail "caso J: podo un UKI sin version en el nombre"
-grep -q "Se conserva UKI sin version en el nombre: rescue.efi" "$LOG" \
+grep -q "Se conserva UKI que no es de este sistema (sin version o de otro machine-id): rescue.efi" "$LOG" \
     || fail "caso J: no logueo la conservacion de rescue.efi"
 echo "  J: UKI sin version (rescue.efi)      -> se conserva, no se poda"
 
@@ -366,7 +366,7 @@ grep -qF "Pruned UKI obsoleto (sin modulos en" "$LOG" \
     || fail "caso K: no logro la poda del UKI antiguo"
 grep -qF "$OLD_EFI" "$LOG" \
     || fail "caso K: no logro la poda del UKI antiguo (nombre en el log)"
-grep -qF "Se conserva UKI sin version en el nombre: rescue.efi" "$LOG" \
+grep -qF "Se conserva UKI que no es de este sistema (sin version o de otro machine-id): rescue.efi" "$LOG" \
     || fail "caso K: no logro la conservacion de rescue.efi"
 echo "  K: pruning por modulos               -> conserva vigente+y-sin-version, poda sin-modulos"
 
