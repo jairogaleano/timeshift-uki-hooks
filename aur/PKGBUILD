@@ -2,7 +2,7 @@
 pkgname=timeshift-uki-hooks-git
 # pkgver lo calcula pkgver() abajo desde git describe; este valor es solo un
 # placeholder para makepkg antes del primer build.
-pkgver=v3.9.r0.ge3328b8
+pkgver=v3.10.r0.gbd3f156
 pkgrel=1
 pkgdesc="Hooks inteligentes para Timeshift que sincronizan imágenes UKI (Unified Kernel Images) con snapshots Btrfs"
 arch=('any')

@@ -4,6 +4,26 @@ Todas las versiones significativas de este proyecto. Formato basado en [Keep a C
 
 ---
 
+## [3.11] - 2026-11-20
+
+### Fixed
+- **Carga segura de configuración:** los hooks ya no hacen `source` directo de
+  `/etc/timeshift/uki-hooks.conf`. Se lee como root solo líneas `CLAVE=valor`
+  con CLAVE en lista blanca (`PRUNE_OLD_UKIS`, `PRUNE_ESP_UKIS`, `PRUNE_UKIS`,
+  `ESP_MIN_FREE_MB`), verificando que el fichero es propiedad de root y sin
+  escritura para grupo/otros (0644 o más restrictivo). Evita inyección de código
+  si alguien con escritura sobre el fichero inserta comandos arbitrarios.
+- **Validación de valores:** los booleanos solo aceptan `true`/`false` y
+  `ESP_MIN_FREE_MB` solo enteros positivos. Cualquier otro valor se ignora y se
+  conserva el valor por defecto, evitando fallos de aritmética con `set -e`.
+- **`.bak` fuera de `hooks.d/`:** `install.sh` guarda las copias de respaldo de
+  los hooks previos en `/etc/timeshift/uki-hooks.bak/` en lugar del mismo
+  directorio `hooks.d/`, donde `run-parts` podría confundirlos.
+- **`flock` añadido a `DEP_PKG`:** `install.sh` lo declara como dependencia
+  (ambos hooks lo usan para exclusión mutua desde v3.8).
+- **CI:** `tests/backup-multiboot.sh` y `tests/restore-multiboot.sh` se añaden
+  al workflow (sintaxis, ShellCheck y ejecución).
+
 ## [3.10] - 2026-11-20
 
 ### Fixed

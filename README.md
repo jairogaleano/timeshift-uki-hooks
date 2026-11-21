@@ -1,4 +1,4 @@
-# Timeshift UKI Hooks v3.10
+# Timeshift UKI Hooks v3.11
 
 Sistema de hooks para **Timeshift** que respalda y restaura imágenes **UKI (Unified Kernel Images)** en sistemas con **Btrfs + Secure Boot**.
 
@@ -502,7 +502,25 @@ Si las *user namespaces* estuvieran deshabilitadas, el test **falla** en lugar d
 
 Para el historial completo de cambios, ver [CHANGELOG.md](CHANGELOG.md).
 
-### v3.10 (Última versión)
+### v3.11 (Última versión)
+- **Carga segura de configuración:** los hooks ya no hacen `source` directo de
+  `/etc/timeshift/uki-hooks.conf`. Se lee como root solo líneas `CLAVE=valor`
+  con CLAVE en lista blanca (`PRUNE_OLD_UKIS`, `PRUNE_ESP_UKIS`, `PRUNE_UKIS`,
+  `ESP_MIN_FREE_MB`), verificando que el fichero es propiedad de root y sin
+  escritura para grupo/otros (0644 o más restrictivo). Evita inyección de código
+  si alguien con escritura sobre el fichero inserta comandos arbitrarios.
+- **Validación de valores:** los booleanos solo aceptan `true`/`false` y
+  `ESP_MIN_FREE_MB` solo enteros positivos. Cualquier otro valor se ignora y se
+  conserva el valor por defecto, evitando fallos de aritmética con `set -e`.
+- **`.bak` fuera de `hooks.d/`:** `install.sh` guarda las copias de respaldo de
+  los hooks previos en `/etc/timeshift/uki-hooks.bak/` en lugar del mismo
+  directorio `hooks.d/`, donde `run-parts` podría confundirlos.
+- **`flock` añadido a `DEP_PKG`:** `install.sh` lo declara como dependencia
+  (ambos hooks lo usan para exclusión mutua desde v3.8).
+- **CI:** `tests/backup-multiboot.sh` y `tests/restore-multiboot.sh` se añaden
+  al workflow (sintaxis, ShellCheck y ejecución).
+
+### v3.10
 - **Configuración de usuario externa (`/etc/timeshift/uki-hooks.conf`).**
   Las constantes `PRUNE_OLD_UKIS`, `PRUNE_ESP_UKIS`, `PRUNE_UKIS` y
   `ESP_MIN_FREE_MB` se leen ahora desde `/etc/timeshift/uki-hooks.conf` en lugar de

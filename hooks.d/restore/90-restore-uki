@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Restore Script (v3.10)
+# Timeshift UKI Hooks - Restore Script (v3.11)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -50,14 +50,45 @@ PRUNE_UKIS=true
 LOCK_FILE="${TSUKI_LOCK_FILE:-/run/lock/timeshift-uki-hooks.lock}"
 # ----------------------
 
-# --- Carga de configuracion de usuario ---
+# --- Carga segura de configuracion de usuario ---
 # Valores de fábrica (arriba). Se sobrescriben por /etc/timeshift/uki-hooks.conf
 # si existe, y por variables de entorno TSUKI_* si se definen (tests/CI).
+# NO se hace 'source' directo: el fichero se lee como root y solo se aceptan
+# lineas CLAVE=valor con CLAVE en lista blanca, para evitar inyeccion de codigo
+# si alguien con escritura sobre el fichero inserta comandos arbitrarios.
+# Además se comprueba que el fichero es propiedad de root y sin escritura para
+# grupo/otros (0644 o mas restrictivo).
+load_conf() {
+    local conf_file="$1"
+    [ -f "$conf_file" ] || return 0
+    local owner perms g o
+    owner=$(stat -c %U "$conf_file" 2>/dev/null || true)
+    perms=$(stat -c %a "$conf_file" 2>/dev/null || true)
+    [ "$owner" = "root" ] || return 0
+    # Permisos: rechazar si grupo u otros tienen escritura.
+    g="${perms:1:1}"
+    o="${perms:2:1}"
+    case "$g$o" in
+        *[2367]*) return 0 ;;
+    esac
+    local key val
+    while IFS='=' read -r key val || [ -n "$key" ]; do
+        # Ignorar comentarios y lineas vacias
+        [[ "$key" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${key// }" ]] && continue
+        key="${key// /}"
+        case "$key" in
+            PRUNE_OLD_UKIS|PRUNE_ESP_UKIS|PRUNE_UKIS)
+                [[ "$val" =~ ^[[:space:]]*(true|false)[[:space:]]*$ ]] && eval "$key=\"${val// /}\""
+                ;;
+            ESP_MIN_FREE_MB)
+                [[ "$val" =~ ^[[:space:]]*[0-9]+[[:space:]]*$ ]] && eval "$key=\"${val// /}\""
+                ;;
+        esac
+    done < "$conf_file"
+}
 CONF_FILE="${TSUKI_CONF_FILE:-/etc/timeshift/uki-hooks.conf}"
-if [ -f "$CONF_FILE" ]; then
-    # shellcheck source=/dev/null
-    . "$CONF_FILE"
-fi
+load_conf "$CONF_FILE"
 # Las variables de entorno TSUKI_* tienen la última palabra.
 ESP_MIN_FREE_MB="${TSUKI_ESP_MIN_FREE_MB:-$ESP_MIN_FREE_MB}"
 PRUNE_UKIS="${TSUKI_PRUNE_UKIS:-$PRUNE_UKIS}"

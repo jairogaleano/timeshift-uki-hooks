@@ -186,7 +186,7 @@ run_restore() {
     : > "$ERR"
     set +e
     chroot "$R" /bin/bash -c \
-        "TSUKI_BACKUP_DIR=/backup TSUKI_LOG_FILE=/tmp/restore.log /hooks.d/restore/90-restore-uki" \
+        "TSUKI_BACKUP_DIR=/backup TSUKI_LOG_FILE=/tmp/restore.log TSUKI_MACHINE_ID=$MID /hooks.d/restore/90-restore-uki" \
         >"$ERR" 2>&1
     echo $?
     set -e

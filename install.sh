@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Timeshift UKI Hooks - Instalador v3.10
+# Timeshift UKI Hooks - Instalador v3.11
 # Soporte universal: Arch, Debian, Fedora, openSUSE, Void, Gentoo, etc.
 #
 
@@ -63,10 +63,12 @@ echo "Verificando dependencias del sistema..."
 # findmnt/lsblk/mountpoint -> util-linux
 # sha256sum/df -> coreutils
 # awk/date/mktemp/stat -> coreutils (gawk/mawk en algunas distros)
+# flock -> util-linux (usado por ambos hooks para exclusion mutua)
 declare -A DEP_PKG=(
   ["findmnt"]="util-linux"
   ["lsblk"]="util-linux"
   ["mountpoint"]="util-linux"
+  ["flock"]="util-linux"
   ["sha256sum"]="coreutils"
   ["df"]="coreutils"
   ["awk"]="coreutils"
@@ -150,12 +152,16 @@ mkdir -p /etc/timeshift/restore-hooks.d
 
 # Respaldar hooks previos (si existen) antes de sobrescribir, para no perder
 # cambios manuales del usuario (PRUNE_*, TSUKI_*, etc.).
+# Se guardan en un directorio aparte (/etc/timeshift/uki-hooks.bak/) para no
+# dejarlos en hooks.d/, donde run-parts podría confundirlos con hooks ejecutables.
 TS="$(date +%Y%m%d-%H%M%S)"
+BAK_DIR="/etc/timeshift/uki-hooks.bak"
+mkdir -p "$BAK_DIR"
 for h in /etc/timeshift/backup-hooks.d/90-backup-uki \
          /etc/timeshift/restore-hooks.d/90-restore-uki; do
   [ -f "$h" ] || continue
-  cp -a "$h" "${h}.bak-${TS}"
-  echo "Respaldo previo: $h -> ${h}.bak-${TS}"
+  cp -a "$h" "$BAK_DIR/$(basename "$h").bak-${TS}"
+  echo "Respaldo previo: $h -> $BAK_DIR/$(basename "$h").bak-${TS}"
 done
 
 # Copiar scripts con nombres estandar (copia atomica y permisos en un solo paso)
