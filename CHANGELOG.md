@@ -4,6 +4,16 @@ Todas las versiones significativas de este proyecto. Formato basado en [Keep a C
 
 ---
 
+## [3.11.1] - 2026-11-20
+
+### Fixed
+- **Carga segura de configuración (load_conf) endurecida:**
+  - **Fallo cerrado:** un valor invalido en cualquier `PRUNE_*` desactiva esa purga y avisa con `WARN` en el log, en vez de ignorarse en silencio y dejar el valor anterior (`true`).
+  - **Mas formatos aceptados:** comentarios en linea (`CLAVE=valor # nota`), comillas (`"false"`, `'false'`), mayusculas (`False`, `TRUE`), prefijo `export`, CRLF y tabuladores finales.
+  - **Sin `eval`:** asignacion con `printf -v` sobre claves de lista blanca.
+  - **Propietario por uid:** `stat -c %u` en vez del nombre, mas robusto en chroot.
+  - **Avisos en el log:** fichero rechazado por propietario o permisos, clave desconocida, linea sin `=` y entero invalido dejan un `WARN` en `/var/log/timeshift.log`.
+
 ## [3.11] - 2026-11-20
 
 ### Fixed

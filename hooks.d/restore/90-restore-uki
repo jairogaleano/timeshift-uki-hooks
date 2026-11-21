@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Restore Script (v3.11)
+# Timeshift UKI Hooks - Restore Script (v3.11.1)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -58,31 +58,81 @@ LOCK_FILE="${TSUKI_LOCK_FILE:-/run/lock/timeshift-uki-hooks.lock}"
 # si alguien con escritura sobre el fichero inserta comandos arbitrarios.
 # Además se comprueba que el fichero es propiedad de root y sin escritura para
 # grupo/otros (0644 o mas restrictivo).
+log() {
+    local level="$1"
+    shift
+    local message="$*"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [UKI Restore Hook] [$level] $message"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [UKI Restore Hook] [$level] $message" >> "$LOG_FILE" 2>/dev/null || true
+}
+
 load_conf() {
     local conf_file="$1"
     [ -f "$conf_file" ] || return 0
-    local owner perms g o
-    owner=$(stat -c %U "$conf_file" 2>/dev/null || true)
+    local owner_uid perms g o
+    owner_uid=$(stat -c %u "$conf_file" 2>/dev/null || true)
     perms=$(stat -c %a "$conf_file" 2>/dev/null || true)
-    [ "$owner" = "root" ] || return 0
+    # Propietario debe ser root (uid 0). Usar uid en vez de nombre por robustez en chroot.
+    [ "$owner_uid" = "0" ] || {
+        log "WARN" "ukiconf: $conf_file no es de root (uid $owner_uid), se ignora"
+        return 0
+    }
     # Permisos: rechazar si grupo u otros tienen escritura.
     g="${perms:1:1}"
     o="${perms:2:1}"
     case "$g$o" in
-        *[2367]*) return 0 ;;
+        *[2367]*) {
+            log "WARN" "ukiconf: $conf_file tiene escritura para grupo u otros, se ignora"
+            return 0
+        } ;;
     esac
-    local key val
-    while IFS='=' read -r key val || [ -n "$key" ]; do
+    local key val line lineno=0
+    while IFS= read -r line || [ -n "$line" ]; do
+        lineno=$((lineno + 1))
+        # Quitar retorno de carro (CRLF) y espacios finales
+        line="${line%$'\r'}"
+        line="${line%"${line##*[![:space:]]}"}"
         # Ignorar comentarios y lineas vacias
-        [[ "$key" =~ ^[[:space:]]*# ]] && continue
-        [[ -z "${key// }" ]] && continue
-        key="${key// /}"
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${line//[[:space:]]/}" ]] && continue
+        # Separar en clave y valor por el primer =
+        key="${line%%=*}"
+        val="${line#*=}"
+        # Si no hay '=', la clave es toda la linea (linea sin asignacion)
+        [ "$key" = "$line" ] && {
+            log "WARN" "ukiconf: linea $lineno sin '=', se ignora: $line"
+            continue
+        }
+        # Quitar espacios alrededor de clave y valor
+        key="${key//[[:space:]]/}"
+        # Soportar comentario en linea: CLAVE=valor # comentario
+        val="${val%%#*}"
+        val="${val%"${val##*[![:space:]]}"}"
+        # Soportar export PRUNE_UKIS=false
+        [[ "$key" =~ ^export[[:space:]]+(.+)$ ]] && key="${BASH_REMATCH[1]}"
+        # Soportar comillas alrededor del valor: "false" o 'false'
+        [[ "$val" =~ ^\"(.*)\"$ ]] && val="${BASH_REMATCH[1]}"
+        [[ "$val" =~ ^\'(.*)\'$ ]] && val="${BASH_REMATCH[1]}"
         case "$key" in
             PRUNE_OLD_UKIS|PRUNE_ESP_UKIS|PRUNE_UKIS)
-                [[ "$val" =~ ^[[:space:]]*(true|false)[[:space:]]*$ ]] && eval "$key=\"${val// /}\""
+                if [[ "$val" =~ ^[Tt][Rr][Uu][Ee]$ ]]; then
+                    printf -v "$key" "true"
+                elif [[ "$val" =~ ^[Ff][Aa][Ll][Ss][Ee]$ ]]; then
+                    printf -v "$key" "false"
+                else
+                    log "WARN" "ukiconf: valor invalido para $key='$val' (linea $lineno), se desactiva"
+                    printf -v "$key" "false"
+                fi
                 ;;
             ESP_MIN_FREE_MB)
-                [[ "$val" =~ ^[[:space:]]*[0-9]+[[:space:]]*$ ]] && eval "$key=\"${val// /}\""
+                if [[ "$val" =~ ^[0-9]+$ ]]; then
+                    printf -v "$key" "$val"
+                else
+                    log "WARN" "ukiconf: valor invalido para ESP_MIN_FREE_MB='$val' (linea $lineno), se ignora"
+                fi
+                ;;
+            *)
+                log "WARN" "ukiconf: clave desconocida '$key' (linea $lineno), se ignora"
                 ;;
         esac
     done < "$conf_file"
@@ -92,14 +142,6 @@ load_conf "$CONF_FILE"
 # Las variables de entorno TSUKI_* tienen la última palabra.
 ESP_MIN_FREE_MB="${TSUKI_ESP_MIN_FREE_MB:-$ESP_MIN_FREE_MB}"
 PRUNE_UKIS="${TSUKI_PRUNE_UKIS:-$PRUNE_UKIS}"
-
-log() {
-    local level="$1"
-    shift
-    local message="$*"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [UKI Restore Hook] [$level] $message"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [UKI Restore Hook] [$level] $message" >> "$LOG_FILE" 2>/dev/null || true
-}
 
 # --- Resolucion del directorio de respaldo de UKIs ---
 # Restore Btrfs in-system: Timeshift NO chrootea; ejecuta este hook en el sistema

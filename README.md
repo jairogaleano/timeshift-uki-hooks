@@ -1,4 +1,4 @@
-# Timeshift UKI Hooks v3.11
+# Timeshift UKI Hooks v3.11.1
 
 Sistema de hooks para **Timeshift** que respalda y restaura imágenes **UKI (Unified Kernel Images)** en sistemas con **Btrfs + Secure Boot**.
 
@@ -502,16 +502,13 @@ Si las *user namespaces* estuvieran deshabilitadas, el test **falla** en lugar d
 
 Para el historial completo de cambios, ver [CHANGELOG.md](CHANGELOG.md).
 
-### v3.11 (Última versión)
-- **Carga segura de configuración:** los hooks ya no hacen `source` directo de
-  `/etc/timeshift/uki-hooks.conf`. Se lee como root solo líneas `CLAVE=valor`
-  con CLAVE en lista blanca (`PRUNE_OLD_UKIS`, `PRUNE_ESP_UKIS`, `PRUNE_UKIS`,
-  `ESP_MIN_FREE_MB`), verificando que el fichero es propiedad de root y sin
-  escritura para grupo/otros (0644 o más restrictivo). Evita inyección de código
-  si alguien con escritura sobre el fichero inserta comandos arbitrarios.
-- **Validación de valores:** los booleanos solo aceptan `true`/`false` y
-  `ESP_MIN_FREE_MB` solo enteros positivos. Cualquier otro valor se ignora y se
-  conserva el valor por defecto, evitando fallos de aritmética con `set -e`.
+### v3.11.1 (Última versión)
+- **Carga segura de configuración (load_conf) endurecida:**
+  - **Fallo cerrado:** un valor invalido en cualquier `PRUNE_*` desactiva esa purga y avisa con `WARN` en el log, en vez de ignorarse en silencio y dejar el valor anterior (`true`).
+  - **Mas formatos aceptados:** comentarios en linea (`CLAVE=valor # nota`), comillas (`"false"`, `'false'`), mayusculas (`False`, `TRUE`), prefijo `export`, CRLF y tabuladores finales.
+  - **Sin `eval`:** asignacion con `printf -v` sobre claves de lista blanca.
+  - **Propietario por uid:** `stat -c %u` en vez del nombre, mas robusto en chroot.
+  - **Avisos en el log:** fichero rechazado por propietario o permisos, clave desconocida, linea sin `=` y entero invalido dejan un `WARN` en `/var/log/timeshift.log`.
 - **`.bak` fuera de `hooks.d/`:** `install.sh` guarda las copias de respaldo de
   los hooks previos en `/etc/timeshift/uki-hooks.bak/` en lugar del mismo
   directorio `hooks.d/`, donde `run-parts` podría confundirlos.
@@ -519,6 +516,8 @@ Para el historial completo de cambios, ver [CHANGELOG.md](CHANGELOG.md).
   (ambos hooks lo usan para exclusión mutua desde v3.8).
 - **CI:** `tests/backup-multiboot.sh` y `tests/restore-multiboot.sh` se añaden
   al workflow (sintaxis, ShellCheck y ejecución).
+- **Tests de configuración:** `tests/conf.sh` con 19 comprobaciones por hook
+  (38 en total) sobre carga, validación y seguridad de `uki-hooks.conf`.
 
 ### v3.10
 - **Configuración de usuario externa (`/etc/timeshift/uki-hooks.conf`).**
