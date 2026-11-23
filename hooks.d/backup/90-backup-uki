@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Backup Script (v3.11.2)
+# Timeshift UKI Hooks - Backup Script (v3.11.3)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -75,6 +75,11 @@ log() {
 load_conf() {
     local conf_file="$1"
     [ -f "$conf_file" ] || return 0
+    # Rechazar symlinks explícitamente (más seguro que confiar solo en -f)
+    if [ -L "$conf_file" ] || [ ! -f "$conf_file" ]; then
+        log "WARN" "ukiconf: $conf_file no es un fichero regular (o es symlink), se ignora"
+        return 0
+    fi
     local owner_uid perms
     owner_uid=$(stat -c %u "$conf_file" 2>/dev/null || true)
     perms=$(stat -c %a "$conf_file" 2>/dev/null || true)

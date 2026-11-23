@@ -1,4 +1,4 @@
-# Timeshift UKI Hooks v3.11.2
+# Timeshift UKI Hooks v3.11.3
 
 Sistema de hooks para **Timeshift** que respalda y restaura imágenes **UKI (Unified Kernel Images)** en sistemas con **Btrfs + Secure Boot**.
 
@@ -502,17 +502,12 @@ Si las *user namespaces* estuvieran deshabilitadas, el test **falla** en lugar d
 
 Para el historial completo de cambios, ver [CHANGELOG.md](CHANGELOG.md).
 
-### v3.11.2 (Última versión)
-- **load_conf() endurecido:**
-  - `export CLAVE=valor` ahora funciona: se comprueba el prefijo `export` ANTES de quitar espacios de la clave (antes `export PRUNE_UKIS` se convertía en `exportPRUNE_UKIS` y se descartaba como clave desconocida).
-  - Comprobación de permisos robusta: `stat -c %a` se normaliza con `printf '%04d'` para evitar fallos con ceros a la izquierda (0064 se leía como "64" y se aceptaba erróneamente escritura de grupo).
-  - `val` se recorta por ambos lados (antes solo al final): `PRUNE_UKIS = false` ahora se acepta correctamente.
-  - `ESP_MIN_FREE_MB=08` o `09` ya no fallan por interpretación octal: se usa `10#$val`.
-- **tests/conf.sh corregido:** falsos positivos eliminados; `setup_backup_uki` crea el directorio de módulos para el restore; tests 12 y 18 verifican que no haya error de aritmética en lugar de asumir éxito.
-- **tests/boot-partition.sh:** `cleanup()` verifica con `findmnt -R` que no queden montajes activos antes de `chmod`/`rm -rf` sobre $TMP (evita borrar directorios montados en contenedores).
-- **install.sh:** eliminada función `install_packages()` nunca usada; `DEP_PKG["awk"]` eliminada (imprecisa); `cp --preserve=all` → `cp --preserve=timestamps` en el restore (más seguro en vfat); `findmnt -rno` con `IFS=` en ambos hooks.
-- **Empaquetado sincronizado:** PKGBUILD raíz y aur/PKGBUILD ahora idénticos (incluyen uki-hooks.conf como backup); .SRCINFO regenerado.
-- **CI:** tests/backup-multiboot.sh y tests/restore-multiboot.sh se ejecutan (no solo bash -n y shellcheck).
+### v3.11.3 (Última versión)
+- **load_conf() endurecido (parche de revisión de Gemini-hydrogen):**
+  - Comprobación explícita de symlinks: `[ -L "$conf_file" ] || [ ! -f "$conf_file" ]` rechaza symlinks válidos a archivos regulares, no solo los rotos.
+  - Validación de `TSUKI_ESP_MIN_FREE_MB`: usa `10#$val` para evitar interpretación octal (08, 09).
+- **install.sh:** añadida `install_packages()` (usando `detect_pkg_manager()` existente) y `DEP_PKG["awk"]="gawk"` (más preciso que `coreutils`).
+- **Empaquetado sincronizado:** PKGBUILD raíz y aur/PKGBUILD idénticos (incluyen uki-hooks.conf como backup); .SRCINFO regenerado.
 
 ### v3.10
 - **Configuración de usuario externa (`/etc/timeshift/uki-hooks.conf`).**

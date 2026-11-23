@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Timeshift UKI Hooks - Restore Script (v3.11.2)
+# Timeshift UKI Hooks - Restore Script (v3.11.3)
 # Copyright (C) 2026 Jairo Galeano
 #
 # This program is free software: you can redistribute it and/or modify
@@ -69,6 +69,11 @@ log() {
 load_conf() {
     local conf_file="$1"
     [ -f "$conf_file" ] || return 0
+    # Rechazar symlinks explícitamente (más seguro que confiar solo en -f)
+    if [ -L "$conf_file" ] || [ ! -f "$conf_file" ]; then
+        log "WARN" "ukiconf: $conf_file no es un fichero regular (o es symlink), se ignora"
+        return 0
+    fi
     local owner_uid perms
     owner_uid=$(stat -c %u "$conf_file" 2>/dev/null || true)
     perms=$(stat -c %a "$conf_file" 2>/dev/null || true)
@@ -148,6 +153,14 @@ CONF_FILE="${TSUKI_CONF_FILE:-/etc/timeshift/uki-hooks.conf}"
 load_conf "$CONF_FILE"
 # Las variables de entorno TSUKI_* tienen la última palabra.
 ESP_MIN_FREE_MB="${TSUKI_ESP_MIN_FREE_MB:-$ESP_MIN_FREE_MB}"
+# Validar ESP_MIN_FREE_MB: debe ser un entero válido (evitar octal con 10#)
+if [[ -n "${TSUKI_ESP_MIN_FREE_MB:-}" ]]; then
+    if [[ "${TSUKI_ESP_MIN_FREE_MB}" =~ ^[0-9]+$ ]]; then
+        ESP_MIN_FREE_MB="$((10#${TSUKI_ESP_MIN_FREE_MB}))"
+    else
+        log "WARN" "ukiconf: valor invalido para TSUKI_ESP_MIN_FREE_MB='${TSUKI_ESP_MIN_FREE_MB}', se usa ${ESP_MIN_FREE_MB}"
+    fi
+fi
 PRUNE_UKIS="${TSUKI_PRUNE_UKIS:-$PRUNE_UKIS}"
 
 # --- Resolucion del directorio de respaldo de UKIs ---
