@@ -4,6 +4,16 @@ Todas las versiones significativas de este proyecto. Formato basado en [Keep a C
 
 ---
 
+## [3.11.4] - 2026-11-20
+
+### Fixed
+- **load_conf() endurecido (parche de revisión de Gemini-hydrogen):**
+  - Comprobación explícita de symlinks: `[ -L "$conf_file" ] || [ ! -f "$conf_file" ]` rechaza symlinks válidos a archivos regulares, no solo los rotos.
+  - Validación de `TSUKI_ESP_MIN_FREE_MB`: usa `10#$val` para evitar interpretación octal (08, 09).
+- **install.sh:** añadida `install_packages()` (usando `detect_pkg_manager()` existente) y `DEP_PKG["awk"]="gawk"` (más preciso que `coreutils`).
+- **Empaquetado sincronizado:** PKGBUILD raíz y aur/PKGBUILD idénticos (incluyen uki-hooks.conf como backup).
+- **.SRCINFO regenerado.**
+
 ## [3.11.3] - 2026-11-20
 
 ### Fixed

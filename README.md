@@ -1,4 +1,4 @@
-# Timeshift UKI Hooks v3.11.3
+# Timeshift UKI Hooks v3.11.4
 
 Sistema de hooks para **Timeshift** que respalda y restaura imágenes **UKI (Unified Kernel Images)** en sistemas con **Btrfs + Secure Boot**.
 
@@ -502,7 +502,7 @@ Si las *user namespaces* estuvieran deshabilitadas, el test **falla** en lugar d
 
 Para el historial completo de cambios, ver [CHANGELOG.md](CHANGELOG.md).
 
-### v3.11.3 (Última versión)
+### v3.11.4 (Última versión)
 - **load_conf() endurecido (parche de revisión de Gemini-hydrogen):**
   - Comprobación explícita de symlinks: `[ -L "$conf_file" ] || [ ! -f "$conf_file" ]` rechaza symlinks válidos a archivos regulares, no solo los rotos.
   - Validación de `TSUKI_ESP_MIN_FREE_MB`: usa `10#$val` para evitar interpretación octal (08, 09).
